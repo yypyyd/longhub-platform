@@ -18,6 +18,9 @@ import {
 } from "@longhub/pack-schema";
 import { createConsoleLogger } from "@longhub/observability";
 import { MemoryStore } from "./memory-store.js";
+import { handleAccountRoutes } from "./account-routes.js";
+import { handleAdminRoutes, requireAdmin, type AdminRouteContext } from "./admin-routes.js";
+import { handleClientReleaseRoutes, type ClientReleaseContext } from "./client-release-routes.js";
 import type { CloudStore, DeviceRecord, EntitlementRecord, PackReleaseRecord } from "./store.js";
 
 export interface SigningKey {
@@ -134,10 +137,31 @@ export function createCloudApiServer(options: CloudApiOptions): Server {
     }
   }
 
+  const adminCtx: AdminRouteContext = { store, adminToken, logger };
+  const accountCtx = { store, logger };
+  const clientReleaseCtx: ClientReleaseContext = {
+    admin: adminCtx,
+    releaseDir: process.env.CLIENT_RELEASE_DIR ?? "./client-releases",
+  };
+
   return createServer((req, res) => {
     void (async () => {
       const url = new URL(req.url ?? "/", "http://localhost");
       const parts = url.pathname.split("/").filter(Boolean);
+
+      // CORS：Portal / Admin Web 直连（生产建议 nginx 同源反代，此处兜底开发与跨端口访问）
+      res.setHeader("access-control-allow-origin", "*");
+      res.setHeader("access-control-allow-headers", "authorization, content-type, idempotency-key, last-event-id");
+      res.setHeader("access-control-allow-methods", "GET, POST, OPTIONS");
+      if (req.method === "OPTIONS") {
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+
+      if (await handleAccountRoutes(accountCtx, req, res, url, parts)) return;
+      if (await handleClientReleaseRoutes(clientReleaseCtx, req, res, url)) return;
+      if (await handleAdminRoutes(adminCtx, req, res, url, parts)) return;
 
       // POST /v1/devices/register（无需设备凭据）
       if (req.method === "POST" && url.pathname === "/v1/devices/register") {
@@ -181,12 +205,10 @@ export function createCloudApiServer(options: CloudApiOptions): Server {
         return;
       }
 
-      // 管理面：套装上传→云端签名→发布 / 吊销（Console 使用管理凭据）
+      // 管理面：套装上传→云端签名→发布 / 吊销（Console/Admin Web 使用管理凭据或管理员会话）
       if (parts[0] === "v1" && parts[1] === "admin" && parts[2] === "packs") {
-        if (bearerToken(req) !== adminToken) {
-          sendError(res, 401, "UNAUTHORIZED", "缺少或无效的管理凭据");
-          return;
-        }
+        const identity = await requireAdmin(adminCtx, req, res, { write: true });
+        if (!identity) return;
         if (req.method === "POST" && parts.length === 3) {
           let parsed: { manifest?: PackManifest; files?: Record<string, string> };
           try {
@@ -230,6 +252,10 @@ export function createCloudApiServer(options: CloudApiOptions): Server {
             return;
           }
           logger.info("release.published", { pack_id: release.pack_id, version: release.version });
+          await store.appendAudit(identity.actor, "release.publish", {
+            pack_id: release.pack_id,
+            version: release.version,
+          });
           sendJson(res, 201, {
             pack_id: release.pack_id,
             version: release.version,
@@ -247,6 +273,10 @@ export function createCloudApiServer(options: CloudApiOptions): Server {
             return;
           }
           logger.info("release.revoked", { pack_id: release.pack_id, version: release.version });
+          await store.appendAudit(identity.actor, "release.revoke", {
+            pack_id: release.pack_id,
+            version: release.version,
+          });
           sendJson(res, 202, { pack_id: release.pack_id, version: release.version, status: release.status });
           return;
         }
@@ -325,12 +355,10 @@ export function createCloudApiServer(options: CloudApiOptions): Server {
         return;
       }
 
-      // 管理面：授予/撤销授权（Console 使用管理凭据）
+      // 管理面：授予/撤销授权（Console/Admin Web 使用管理凭据或管理员会话）
       if (parts[0] === "v1" && parts[1] === "admin" && parts[2] === "entitlements") {
-        if (bearerToken(req) !== adminToken) {
-          sendError(res, 401, "UNAUTHORIZED", "缺少或无效的管理凭据");
-          return;
-        }
+        const identity = await requireAdmin(adminCtx, req, res, { write: true });
+        if (!identity) return;
         if (req.method === "POST" && parts.length === 3) {
           let parsed: { device_id?: string; pack_id?: string; expires_at?: string };
           try {
@@ -355,6 +383,11 @@ export function createCloudApiServer(options: CloudApiOptions): Server {
             expires_at: parsed.expires_at,
           });
           logger.info("entitlement.granted", { entitlement_id: record.entitlement_id, pack_id: record.pack_id });
+          await store.appendAudit(identity.actor, "entitlement.grant", {
+            entitlement_id: record.entitlement_id,
+            device_id: record.device_id,
+            pack_id: record.pack_id,
+          });
           sendJson(res, 201, record);
           return;
         }
@@ -365,6 +398,7 @@ export function createCloudApiServer(options: CloudApiOptions): Server {
             return;
           }
           logger.info("entitlement.revoked", { entitlement_id: record.entitlement_id });
+          await store.appendAudit(identity.actor, "entitlement.revoke", { entitlement_id: record.entitlement_id });
           sendJson(res, 202, record);
           return;
         }

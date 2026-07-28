@@ -2,7 +2,7 @@
   "name": "longhub-cloud-api",
   "version": "0.1.0",
   "private": true,
-  "description": "龙枢云台：模块化单体控制面 API",
+  "description": "\u9f99\u67a2\u4e91\u53f0\uff1a\u6a21\u5757\u5316\u5355\u4f53\u63a7\u5236\u9762 API",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -16,7 +16,8 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "start": "node dist/main.js"
   },
   "dependencies": {
     "@longhub/observability": "workspace:*",

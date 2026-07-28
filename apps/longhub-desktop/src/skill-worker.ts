@@ -11,6 +11,7 @@ import {
   createMockAdapter,
   createOpenClawAdapter,
   type UpstreamRuntimeAdapter,
+  type UpstreamSession,
 } from "@longhub/xiaolongxia-adapter";
 
 const echoUpper = defineSkill<{ text: string }, { text: string }>({
@@ -38,9 +39,46 @@ function upstream(): Promise<UpstreamRuntimeAdapter> {
 
 const jdDraft = createJdDraftSkill(upstream);
 
+/** 底座默认智能体（OpenClaw 默认 agent id 为 main），可用环境变量覆盖 */
+const CHAT_AGENT_ID = process.env.LONGHUB_CHAT_AGENT_ID ?? "main";
+
+/** 每个对话复用一个底座会话，上下文跨消息保持 */
+const chatSessions = new Map<string, Promise<UpstreamSession>>();
+
+const chat = defineSkill<
+  { conversationId: string; message: string },
+  { reply: string }
+>({
+  id: "longhub.skill.chat",
+  level: "L2",
+  permissions: [],
+  async run(input) {
+    if (!input.message.trim()) throw new Error("message 不能为空");
+    const adapter = await upstream();
+    let sessionPromise = chatSessions.get(input.conversationId);
+    if (!sessionPromise) {
+      sessionPromise = adapter.createSession(CHAT_AGENT_ID);
+      chatSessions.set(input.conversationId, sessionPromise);
+    }
+    const session = await sessionPromise;
+    let finalText = "";
+    for await (const event of adapter.sendMessage(session, input.message)) {
+      if (event.type === "done") {
+        finalText = event.finalText;
+      } else if (event.type === "error") {
+        chatSessions.delete(input.conversationId);
+        throw new Error(`底座回复失败 [${event.code}] ${event.message}`);
+      }
+    }
+    if (!finalText) throw new Error("底座未返回内容");
+    return { reply: finalText };
+  },
+});
+
 const skills = new Map<string, SkillDefinition<unknown, unknown>>([
   [echoUpper.id, echoUpper as SkillDefinition<unknown, unknown>],
   [jdDraft.id, jdDraft as SkillDefinition<unknown, unknown>],
+  [chat.id, chat as SkillDefinition<unknown, unknown>],
   ...hrLocalSkills.map(
     (skill) => [skill.id, skill] as [string, SkillDefinition<unknown, unknown>],
   ),

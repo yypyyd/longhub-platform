@@ -1,0 +1,102 @@
+/* 苹果风后台：侧栏 + 卡片，大留白、圆角、毛玻璃 */
+:root {
+  --bg: #f5f5f7;
+  --card: #ffffff;
+  --text: #1d1d1f;
+  --muted: #6e6e73;
+  --accent: #0071e3;
+  --accent-hover: #0077ed;
+  --danger: #ff3b30;
+  --ok: #34c759;
+  --radius: 16px;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: "SF Pro SC", "PingFang SC", "Helvetica Neue", "Microsoft YaHei", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.layout { display: flex; min-height: 100vh; }
+
+.sidebar {
+  width: 220px; flex-shrink: 0; padding: 24px 12px;
+  background: rgba(255, 255, 255, 0.72);
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  border-right: 1px solid rgba(0, 0, 0, 0.08);
+  position: sticky; top: 0; height: 100vh;
+}
+.sidebar .brand { font-weight: 600; font-size: 16px; padding: 8px 12px 20px; }
+.sidebar button {
+  display: block; width: 100%; text-align: left;
+  background: none; border: none; cursor: pointer;
+  font-size: 14px; color: var(--text); padding: 9px 12px;
+  border-radius: 10px; margin-bottom: 2px;
+}
+.sidebar button:hover { background: rgba(0, 0, 0, 0.05); }
+.sidebar button.active { background: var(--accent); color: #fff; }
+.sidebar .who { font-size: 12px; color: var(--muted); padding: 16px 12px 6px; }
+
+.main { flex: 1; padding: 32px 36px 64px; max-width: 1200px; }
+.main h2 { font-size: 26px; font-weight: 700; margin-bottom: 20px; letter-spacing: -0.01em; }
+
+.card {
+  background: var(--card); border-radius: var(--radius);
+  padding: 24px; box-shadow: 0 2px 12px rgba(0, 0, 0, 0.04);
+  margin-bottom: 20px;
+}
+.card h3 { font-size: 17px; margin-bottom: 12px; }
+
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; }
+.stat { background: var(--card); border-radius: var(--radius); padding: 22px; box-shadow: 0 2px 12px rgba(0, 0, 0, 0.04); }
+.stat .num { font-size: 32px; font-weight: 700; }
+.stat .label { font-size: 13px; color: var(--muted); margin-top: 4px; }
+
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid rgba(0, 0, 0, 0.06); }
+th { color: var(--muted); font-weight: 500; font-size: 12px; }
+
+.pill {
+  display: inline-block; font-size: 12px; padding: 2px 10px; border-radius: 980px;
+  background: rgba(0, 0, 0, 0.05); color: var(--muted);
+}
+.pill.active, .pill.paid, .pill.listed { background: rgba(52, 199, 89, 0.12); color: #1d8a3e; }
+.pill.pending { background: rgba(255, 149, 0, 0.14); color: #b06a00; }
+.pill.revoked, .pill.refunded, .pill.disabled, .pill.unlisted { background: rgba(255, 59, 48, 0.1); color: var(--danger); }
+
+.btn {
+  display: inline-block; border: none; cursor: pointer;
+  background: var(--accent); color: #fff;
+  font-size: 13px; padding: 7px 16px; border-radius: 980px;
+  transition: background 0.15s ease;
+}
+.btn:hover { background: var(--accent-hover); }
+.btn.ghost { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
+.btn.danger { background: var(--danger); }
+.btn:disabled { opacity: 0.4; cursor: default; }
+
+input, select {
+  font-size: 14px; padding: 8px 12px;
+  border: 1px solid #d2d2d7; border-radius: 10px; background: #fff; outline: none;
+}
+input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(0, 113, 227, 0.15); }
+
+.row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.mt { margin-top: 16px; }
+.muted { color: var(--muted); font-size: 13px; }
+.error { color: var(--danger); font-size: 13px; margin-top: 10px; }
+.notice { color: var(--ok); font-size: 13px; margin-top: 10px; }
+
+.login-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+.login {
+  width: 380px; background: var(--card); border-radius: 20px; padding: 40px;
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.08);
+}
+.login h1 { font-size: 24px; text-align: center; margin-bottom: 24px; }
+.login label { display: block; font-size: 13px; color: var(--muted); margin: 14px 0 6px; }
+.login input { width: 100%; font-size: 15px; padding: 11px 14px; border-radius: 12px; }
+.login .btn { width: 100%; margin-top: 24px; font-size: 15px; padding: 11px; }

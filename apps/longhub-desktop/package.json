@@ -1,6 +1,6 @@
 {
   "name": "longhub-desktop",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "private": true,
   "description": "龙枢工作台：Windows 客户端（Electron + React 壳）",
   "type": "module",
@@ -18,7 +18,37 @@
     "lint": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.renderer.json --noEmit",
     "test": "vitest run",
     "prototype": "node dist/prototype.js",
-    "start": "electron ."
+    "start": "electron .",
+    "predist": "node -e \"const fs=require('fs');fs.mkdirSync('node-runtime',{recursive:true});fs.copyFileSync(process.execPath,'node-runtime/node.exe')\"",
+    "dist": "electron-builder --win nsis"
+  },
+  "build": {
+    "appId": "cn.longhub.desktop",
+    "productName": "LongHub",
+    "artifactName": "LongHub-Setup-${version}.exe",
+    "asar": false,
+    "npmRebuild": false,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "node-runtime",
+        "to": "node-runtime"
+      }
+    ],
+    "win": {
+      "target": "nsis",
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": true,
+      "shortcutName": "龙枢工作台"
+    }
   },
   "dependencies": {
     "@longhub/api-client": "workspace:*",
@@ -27,6 +57,7 @@
     "@longhub/xiaolongxia-adapter": "workspace:*",
     "@longhub/pack-schema": "workspace:*",
     "@longhub/sdk": "workspace:*",
+    "openclaw": "2026.7.1-2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
@@ -36,6 +67,7 @@
     "@types/react-dom": "^18.3.5",
     "@vitejs/plugin-react": "^4.3.4",
     "electron": "^33.3.1",
+    "electron-builder": "^25.1.8",
     "typescript": "^5.7.3",
     "vite": "^5.4.11",
     "vitest": "^2.1.8",

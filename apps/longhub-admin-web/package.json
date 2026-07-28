@@ -1,0 +1,23 @@
+{
+  "name": "longhub-admin-web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "龙枢后台管理：看板 / 用户 / 设备 / 授权 / 套装 / 商品 / 订单 / 充值 / 审计",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json --noEmit && vite build",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.7.3",
+    "vite": "^5.4.11"
+  }
+}

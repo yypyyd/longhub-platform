@@ -6,6 +6,7 @@ import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
 
 contextBridge.exposeInMainWorld("longhub", {
   hello: () => ipcRenderer.invoke("core:hello"),
+  deviceInfo: () => ipcRenderer.invoke("device:info"),
   submitTask: (params: unknown) => ipcRenderer.invoke("task:submit", params),
   getTask: (taskId: string) => ipcRenderer.invoke("task:get", taskId),
   cancelTask: (taskId: string) => ipcRenderer.invoke("task:cancel", taskId),

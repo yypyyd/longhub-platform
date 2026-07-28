@@ -2,7 +2,7 @@
   "name": "longhub-executor",
   "version": "0.1.0",
   "private": true,
-  "description": "龙枢执行器：执行受保护的云端原子技能",
+  "description": "\u9f99\u67a2\u6267\u884c\u5668\uff1a\u6267\u884c\u53d7\u4fdd\u62a4\u7684\u4e91\u7aef\u539f\u5b50\u6280\u80fd",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -15,7 +15,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "lint": "tsc -p tsconfig.json --noEmit"
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "start": "node dist/main.js"
   },
   "dependencies": {
     "@longhub/observability": "workspace:*"

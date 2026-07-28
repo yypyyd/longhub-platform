@@ -1,108 +1,129 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type {
+  DeviceInfo,
   InstalledPack,
   SubmitTaskParams,
   TaskEvent,
   TaskRecord,
 } from "./longhub";
 
-interface TaskView extends TaskRecord {
-  skillId: string;
-  events: string[];
+const CHAT_SKILL_ID = "longhub.skill.chat";
+const CLOUD_BASE_URL = "http://154.9.26.158:8081";
+const HR_PACK_ID = "longhub.hr-suite";
+
+interface ChatMessage {
+  id: string;
+  role: "user" | "assistant";
+  text: string;
+  status: "pending" | "done" | "failed";
 }
+
+const QUICK_PROMPTS = [
+  { label: "起草 JD", prompt: "请帮我为「高级前端工程师」岗位起草一份职位描述。" },
+  { label: "简历初筛", prompt: "请帮我制定一份简历初筛标准，岗位是产品经理。" },
+  { label: "Offer 函", prompt: "请帮我起草一份 Offer 录用通知函模板。" },
+];
 
 export function App() {
   const [coreVersion, setCoreVersion] = useState("");
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [draft, setDraft] = useState("");
+  const [sending, setSending] = useState(false);
+  const [conversationId] = useState(() => crypto.randomUUID());
   const [packs, setPacks] = useState<InstalledPack[]>([]);
-  const [tasks, setTasks] = useState<Record<string, TaskView>>({});
-  const [skillId, setSkillId] = useState("longhub.skill.echo-upper");
-  const [inputText, setInputText] = useState("longhub");
-  const [permissionsText, setPermissionsText] = useState("");
+  const [deviceInfo, setDeviceInfo] = useState<DeviceInfo | undefined>();
+  const [notice, setNotice] = useState("");
+  const [cloudBusy, setCloudBusy] = useState(false);
   const [pendingConfirmation, setPendingConfirmation] = useState<
     { params: SubmitTaskParams; permissions: string[] } | undefined
   >();
-  const [notice, setNotice] = useState("");
-  const [cloudBaseUrl, setCloudBaseUrl] = useState("http://127.0.0.1:8081");
-  const [cloudPackId, setCloudPackId] = useState("longhub.hr-suite");
-  const [cloudVersion, setCloudVersion] = useState("");
-  const [cloudBusy, setCloudBusy] = useState(false);
+  const taskToMessage = useRef(new Map<string, string>());
+  const scrollRef = useRef<HTMLDivElement | null>(null);
 
   const refreshPacks = useCallback(async () => {
     setPacks(await window.longhub.listPacks());
   }, []);
 
-  const refreshTask = useCallback(async (taskId: string) => {
-    const record = await window.longhub.getTask(taskId);
-    setTasks((prev) => {
-      const existing = prev[taskId];
-      if (!existing) return prev;
-      return { ...prev, [taskId]: { ...existing, ...record } };
-    });
+  const resolveTask = useCallback(async (taskId: string) => {
+    const messageId = taskToMessage.current.get(taskId);
+    if (!messageId) return;
+    const record: TaskRecord = await window.longhub.getTask(taskId);
+    if (record.status === "succeeded") {
+      const reply = (record.output as { reply?: string } | undefined)?.reply;
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === messageId ? { ...m, text: reply ?? "（无内容）", status: "done" } : m,
+        ),
+      );
+      taskToMessage.current.delete(taskId);
+      setSending(false);
+    } else if (record.status === "failed" || record.status === "timed_out") {
+      const message = record.error?.message ?? "任务失败";
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === messageId ? { ...m, text: `出错了：${message}`, status: "failed" } : m,
+        ),
+      );
+      taskToMessage.current.delete(taskId);
+      setSending(false);
+    }
   }, []);
 
   useEffect(() => {
     void window.longhub.hello().then((h) => setCoreVersion(h.coreRpcVersion));
+    void window.longhub.deviceInfo().then(setDeviceInfo);
     void refreshPacks();
     return window.longhub.onTaskEvent((event: TaskEvent) => {
-      setTasks((prev) => {
-        const existing = prev[event.task_id];
-        if (!existing) return prev;
-        return {
-          ...prev,
-          [event.task_id]: { ...existing, events: [...existing.events, event.type] },
-        };
-      });
-      void refreshTask(event.task_id);
+      void resolveTask(event.task_id);
     });
-  }, [refreshPacks, refreshTask]);
+  }, [refreshPacks, resolveTask]);
 
-  async function doSubmit(params: SubmitTaskParams) {
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+  }, [messages]);
+
+  async function doSubmit(params: SubmitTaskParams, assistantMessageId: string) {
     const result = await window.longhub.submitTask(params);
     if ("needsConfirmation" in result) {
       setPendingConfirmation({ params, permissions: result.needsConfirmation });
+      setMessages((prev) => prev.filter((m) => m.id !== assistantMessageId));
+      setSending(false);
       return;
     }
-    setTasks((prev) => ({
+    taskToMessage.current.set(result.taskId, assistantMessageId);
+    // 任务可能在映射建立前就已完成（Mock 即时返回），补一次查询兜底
+    void resolveTask(result.taskId);
+  }
+
+  function sendMessage(text: string) {
+    const content = text.trim();
+    if (!content || sending) return;
+    const userId = crypto.randomUUID();
+    const assistantId = crypto.randomUUID();
+    setMessages((prev) => [
       ...prev,
-      [result.taskId]: {
-        taskId: result.taskId,
-        status: result.status,
-        skillId: params.skillId,
-        events: [],
+      { id: userId, role: "user", text: content, status: "done" },
+      { id: assistantId, role: "assistant", text: "", status: "pending" },
+    ]);
+    setDraft("");
+    setSending(true);
+    void doSubmit(
+      {
+        idempotencyKey: crypto.randomUUID(),
+        skillId: CHAT_SKILL_ID,
+        input: { conversationId, message: content },
+        grantedPermissions: [],
       },
-    }));
-  }
-
-  function handleSubmit() {
-    const grantedPermissions = permissionsText
-      .split(/[,\s]+/)
-      .map((p) => p.trim())
-      .filter((p) => p.length > 0);
-    void doSubmit({
-      idempotencyKey: crypto.randomUUID(),
-      skillId,
-      input: { text: inputText },
-      grantedPermissions,
-    });
-  }
-
-  async function handleInstall() {
-    const result = await window.longhub.installPack();
-    setNotice(
-      result.ok
-        ? `已安装 ${result.packId} v${result.version}`
-        : `安装失败 [${result.code}] ${result.message}`,
+      assistantId,
     );
-    await refreshPacks();
   }
 
-  async function handleInstallFromCloud() {
+  async function handleInstallHrSuite() {
     setCloudBusy(true);
     try {
       const result = await window.longhub.installPackFromCloud({
-        baseUrl: cloudBaseUrl,
-        packId: cloudPackId,
-        version: cloudVersion.trim() === "" ? undefined : cloudVersion.trim(),
+        baseUrl: CLOUD_BASE_URL,
+        packId: HR_PACK_ID,
       });
       setNotice(
         result.ok
@@ -127,96 +148,103 @@ export function App() {
 
   return (
     <div className="app">
-      <header>
-        <h1>龙枢工作台</h1>
-        <span className="core-version">
-          {coreVersion ? `Core RPC ${coreVersion}` : "Core 连接中…"}
-        </span>
-      </header>
+      <aside className="sidebar">
+        <div className="brand">
+          <div className="brand-logo">龙</div>
+          <div>
+            <div className="brand-name">龙枢工作台</div>
+            <div className="brand-sub">{coreVersion ? `Core ${coreVersion}` : "连接中…"}</div>
+          </div>
+        </div>
 
-      {notice && <div className="notice">{notice}</div>}
-
-      <main>
-        <section className="panel">
-          <h2>智能体套装</h2>
-          <button onClick={() => void handleInstall()}>安装套装…</button>
-          {packs.length === 0 ? (
-            <p className="empty">尚未安装任何套装</p>
+        <section className="side-card">
+          <h3>我的设备</h3>
+          {deviceInfo === undefined ? (
+            <p className="muted">设备注册中…</p>
+          ) : deviceInfo.ok ? (
+            <>
+              <code className="device-id">{deviceInfo.deviceId}</code>
+              <button
+                className="ghost"
+                onClick={() => void navigator.clipboard.writeText(deviceInfo.deviceId)}
+              >
+                复制设备 ID
+              </button>
+              <p className="muted">在官网「个人中心 → 我的设备」绑定后，订阅授权自动下发。</p>
+            </>
           ) : (
-            <ul>
+            <p className="muted">设备注册失败：{deviceInfo.message}</p>
+          )}
+        </section>
+
+        <section className="side-card">
+          <h3>智能体套装</h3>
+          {packs.length === 0 ? (
+            <p className="muted">尚未安装套装</p>
+          ) : (
+            <ul className="pack-list">
               {packs.map((pack) => (
                 <li key={pack.packId}>
-                  <strong>{pack.packId}</strong>
-                  <span> v{pack.activeVersion ?? "?"}</span>
+                  <span className="pack-name">{pack.packId}</span>
+                  <span className="pack-version">v{pack.activeVersion ?? "?"}</span>
                   {pack.previousVersion && (
-                    <button onClick={() => void handleRollback(pack.packId)}>
-                      回滚到 v{pack.previousVersion}
+                    <button className="ghost" onClick={() => void handleRollback(pack.packId)}>
+                      回滚 v{pack.previousVersion}
                     </button>
                   )}
                 </li>
               ))}
             </ul>
           )}
-          <h3>从云端安装</h3>
-          <div className="form">
-            <label>
-              云端地址
-              <input value={cloudBaseUrl} onChange={(e) => setCloudBaseUrl(e.target.value)} />
-            </label>
-            <label>
-              套装 ID
-              <input value={cloudPackId} onChange={(e) => setCloudPackId(e.target.value)} />
-            </label>
-            <label>
-              版本（留空取最新）
-              <input value={cloudVersion} onChange={(e) => setCloudVersion(e.target.value)} />
-            </label>
-            <button disabled={cloudBusy} onClick={() => void handleInstallFromCloud()}>
-              {cloudBusy ? "安装中…" : "从云端安装"}
-            </button>
-          </div>
+          <button disabled={cloudBusy} onClick={() => void handleInstallHrSuite()}>
+            {cloudBusy ? "安装中…" : "安装 HR 套装"}
+          </button>
         </section>
 
-        <section className="panel">
-          <h2>任务面板</h2>
-          <div className="form">
-            <label>
-              技能
-              <input value={skillId} onChange={(e) => setSkillId(e.target.value)} />
-            </label>
-            <label>
-              输入文本
-              <input value={inputText} onChange={(e) => setInputText(e.target.value)} />
-            </label>
-            <label>
-              申请权限（逗号分隔，如 connector:hr-api:read）
-              <input
-                value={permissionsText}
-                onChange={(e) => setPermissionsText(e.target.value)}
-              />
-            </label>
-            <button onClick={handleSubmit}>提交任务</button>
-          </div>
-          <ul className="tasks">
-            {Object.values(tasks).map((task) => (
-              <li key={task.taskId}>
-                <div>
-                  <strong>{task.taskId}</strong> {task.skillId} —{" "}
-                  <span className={`status status-${task.status}`}>{task.status}</span>
-                  {(task.status === "pending" || task.status === "running") && (
-                    <button onClick={() => void window.longhub.cancelTask(task.taskId)}>
-                      取消
-                    </button>
-                  )}
+        {notice && <div className="notice">{notice}</div>}
+      </aside>
+
+      <main className="chat">
+        <div className="chat-scroll" ref={scrollRef}>
+          {messages.length === 0 ? (
+            <div className="chat-empty">
+              <h2>你好，我是龙枢助手</h2>
+              <p>可以直接跟我对话，也可以从下面的快捷任务开始。</p>
+              <div className="chips">
+                {QUICK_PROMPTS.map((q) => (
+                  <button key={q.label} className="chip" onClick={() => sendMessage(q.prompt)}>
+                    {q.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : (
+            messages.map((m) => (
+              <div key={m.id} className={`bubble-row ${m.role}`}>
+                <div className={`bubble ${m.role} ${m.status}`}>
+                  {m.status === "pending" ? <span className="typing">思考中…</span> : m.text}
                 </div>
-                {task.output !== undefined && (
-                  <pre>{JSON.stringify(task.output, null, 2)}</pre>
-                )}
-                <div className="events">{task.events.join(" → ")}</div>
-              </li>
-            ))}
-          </ul>
-        </section>
+              </div>
+            ))
+          )}
+        </div>
+        <div className="composer">
+          <textarea
+            value={draft}
+            placeholder="输入消息，Enter 发送，Shift+Enter 换行"
+            rows={1}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage(draft);
+              }
+            }}
+          />
+          <button disabled={sending || draft.trim() === ""} onClick={() => sendMessage(draft)}>
+            发送
+          </button>
+        </div>
       </main>
 
       {pendingConfirmation && (
@@ -236,12 +264,20 @@ export function App() {
                 onClick={() => {
                   const { params } = pendingConfirmation;
                   setPendingConfirmation(undefined);
-                  void doSubmit({ ...params, userConfirmed: true });
+                  const assistantId = crypto.randomUUID();
+                  setMessages((prev) => [
+                    ...prev,
+                    { id: assistantId, role: "assistant", text: "", status: "pending" },
+                  ]);
+                  setSending(true);
+                  void doSubmit({ ...params, userConfirmed: true }, assistantId);
                 }}
               >
                 批准并执行
               </button>
-              <button onClick={() => setPendingConfirmation(undefined)}>拒绝</button>
+              <button className="ghost" onClick={() => setPendingConfirmation(undefined)}>
+                拒绝
+              </button>
             </div>
           </div>
         </div>

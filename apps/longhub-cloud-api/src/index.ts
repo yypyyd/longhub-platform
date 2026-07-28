@@ -1,4 +1,5 @@
 import { createConsoleLogger } from "@longhub/observability";
+import { hashPassword } from "./auth.js";
 import { createCloudApiServer } from "./server.js";
 import { MemoryStore } from "./memory-store.js";
 import { PgStore } from "./pg-store.js";
@@ -7,13 +8,21 @@ export { createCloudApiServer, generateSigningKey, type SigningKey } from "./ser
 export { MemoryStore } from "./memory-store.js";
 export { PgStore } from "./pg-store.js";
 export type {
+  AdminRecord,
+  AdminRole,
+  AuditLogRecord,
   CloudStore,
   CloudTask,
   CloudTaskEvent,
   CloudTaskStatus,
   DeviceRecord,
   EntitlementRecord,
+  OrderRecord,
   PackReleaseRecord,
+  ProductRecord,
+  SessionRecord,
+  UserRecord,
+  WalletTransactionRecord,
 } from "./store.js";
 
 /** 控制面模块清单：Identity/Agent Catalog/Entitlement/Release/Artifact/Task/Execution/Model Gateway/Audit */
@@ -44,6 +53,17 @@ export async function bootstrap(
   } else {
     logger.warn("store.memory", { reason: "未配置 DATABASE_URL，任务与设备数据不持久化" });
     store = new MemoryStore();
+  }
+  // 从环境变量播种初始超级管理员（已存在则跳过）
+  const seedUsername = process.env.ADMIN_SEED_USERNAME;
+  const seedPassword = process.env.ADMIN_SEED_PASSWORD;
+  if (seedUsername && seedPassword) {
+    const { existed } = await store.createAdmin({
+      username: seedUsername,
+      password_hash: hashPassword(seedPassword),
+      role: "super",
+    });
+    logger.info("admin.seed", { username: seedUsername, existed });
   }
   createCloudApiServer({ executorUrl, store, adminToken: process.env.ADMIN_TOKEN }).listen(port, () =>
     logger.info("listening", {

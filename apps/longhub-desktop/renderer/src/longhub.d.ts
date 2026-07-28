@@ -36,8 +36,13 @@ export type SubmitTaskResult =
   | { needsConfirmation: string[] }
   | { taskId: string; status: string };
 
+export type DeviceInfo =
+  | { ok: true; deviceId: string; baseUrl: string }
+  | { ok: false; baseUrl: string; message: string };
+
 export interface LonghubApi {
   hello(): Promise<{ coreRpcVersion: string }>;
+  deviceInfo(): Promise<DeviceInfo>;
   submitTask(params: SubmitTaskParams): Promise<SubmitTaskResult>;
   getTask(taskId: string): Promise<TaskRecord>;
   cancelTask(taskId: string): Promise<TaskRecord>;
