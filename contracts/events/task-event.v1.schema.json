@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://longhub.example.com/contracts/events/task-event.v1.schema.json",
+  "title": "LongHub 任务事件 V1",
+  "description": "任务进度事件（SSE data 字段与本地 event.task 负载共用）。event_id 单调递增，用于 Last-Event-ID 断线恢复。",
+  "type": "object",
+  "required": ["event_id", "task_id", "type", "ts"],
+  "properties": {
+    "event_id": { "type": "string" },
+    "task_id": { "type": "string" },
+    "type": {
+      "type": "string",
+      "enum": [
+        "task.accepted",
+        "task.started",
+        "task.progress",
+        "task.output.delta",
+        "task.confirm.required",
+        "task.succeeded",
+        "task.failed",
+        "task.cancelled",
+        "task.timed_out"
+      ]
+    },
+    "ts": { "type": "string", "format": "date-time" },
+    "progress": {
+      "type": "object",
+      "properties": {
+        "percent": { "type": "number", "minimum": 0, "maximum": 100 },
+        "message": { "type": "string" }
+      }
+    },
+    "delta": { "type": "string", "description": "type=task.output.delta 时的增量输出" },
+    "error": {
+      "type": "object",
+      "required": ["code", "message", "retryable"],
+      "properties": {
+        "code": { "type": "string" },
+        "message": { "type": "string" },
+        "retryable": { "type": "boolean" }
+      }
+    }
+  }
+}

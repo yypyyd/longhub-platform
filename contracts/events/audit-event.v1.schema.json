@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://longhub.example.com/contracts/events/audit-event.v1.schema.json",
+  "title": "LongHub 审计事件 V1",
+  "description": "发布、授权、安装和敏感调用的审计事件，要求全链路可追踪。",
+  "type": "object",
+  "required": ["audit_id", "ts", "actor", "action", "resource", "outcome", "request_id"],
+  "properties": {
+    "audit_id": { "type": "string" },
+    "ts": { "type": "string", "format": "date-time" },
+    "actor": {
+      "type": "object",
+      "required": ["type", "id"],
+      "properties": {
+        "type": { "type": "string", "enum": ["user", "device", "service", "console_admin"] },
+        "id": { "type": "string" },
+        "tenant_id": { "type": "string" }
+      }
+    },
+    "action": {
+      "type": "string",
+      "enum": [
+        "release.publish",
+        "release.approve",
+        "release.rollback",
+        "release.revoke",
+        "entitlement.grant",
+        "entitlement.revoke",
+        "pack.install",
+        "pack.upgrade",
+        "pack.rollback",
+        "skill.sensitive_call",
+        "confirm.approved",
+        "confirm.rejected"
+      ]
+    },
+    "resource": {
+      "type": "object",
+      "required": ["type", "id"],
+      "properties": {
+        "type": { "type": "string" },
+        "id": { "type": "string" },
+        "version": { "type": "string" }
+      }
+    },
+    "outcome": { "type": "string", "enum": ["success", "failure", "denied"] },
+    "request_id": { "type": "string" },
+    "task_id": { "type": "string" },
+    "details": { "type": "object" }
+  }
+}

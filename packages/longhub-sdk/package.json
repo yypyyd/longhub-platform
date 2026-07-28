@@ -1,0 +1,26 @@
+{
+  "name": "@longhub/sdk",
+  "version": "0.1.0",
+  "description": "能力开发 SDK：能力包、技能与连接器开发接口",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "typescript": "^5.7.3"
+  },
+  "files": [
+    "dist"
+  ]
+}

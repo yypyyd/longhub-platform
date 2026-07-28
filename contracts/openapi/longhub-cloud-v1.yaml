@@ -1,0 +1,651 @@
+openapi: 3.1.0
+info:
+  title: LongHub Cloud API
+  description: 龙枢云台控制面 REST 契约 V1（冻结契约草案）。破坏性变更必须创建新主版本或兼容过渡层。
+  version: "1.0.0"
+servers:
+  - url: https://api.longhub.example.com/v1
+tags:
+  - name: identity
+    description: OIDC、用户、租户、设备
+  - name: catalog
+    description: 智能体模板、套装与能力目录
+  - name: entitlement
+    description: 租户/用户/设备授权与撤销
+  - name: release
+    description: 版本、渠道、灰度、兼容与吊销
+  - name: artifact
+    description: 制品、摘要、签名与下载许可
+  - name: task
+    description: 云端任务、状态、幂等与事件
+security:
+  - bearerAuth: []
+paths:
+  /devices/register:
+    post:
+      tags: [identity]
+      summary: 注册设备并颁发设备凭据
+      operationId: registerDevice
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeviceRegisterRequest"
+      responses:
+        "201":
+          description: 设备注册成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Device"
+        "4XX":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /catalog/packs:
+    get:
+      tags: [catalog]
+      summary: 列出当前租户可见的套装
+      operationId: listPacks
+      parameters:
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/PageToken"
+      responses:
+        "200":
+          description: 套装列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PackList"
+        "4XX":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /catalog/packs/{packId}:
+    get:
+      tags: [catalog]
+      summary: 查看套装详情
+      operationId: getPack
+      parameters:
+        - $ref: "#/components/parameters/PackId"
+      responses:
+        "200":
+          description: 套装详情
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PackSummary"
+        "4XX":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /entitlements:
+    get:
+      tags: [entitlement]
+      summary: 查询当前用户/设备的有效授权
+      operationId: listEntitlements
+      responses:
+        "200":
+          description: 授权列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [entitlements]
+                properties:
+                  entitlements:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Entitlement"
+        "4XX":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /admin/entitlements:
+    post:
+      tags: [entitlement]
+      summary: 管理面：为设备授予套装授权（Console 使用管理凭据）
+      operationId: grantEntitlement
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [device_id, pack_id]
+              properties:
+                device_id:
+                  type: string
+                pack_id:
+                  type: string
+                expires_at:
+                  type: string
+                  format: date-time
+      responses:
+        "201":
+          description: 授权已授予
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Entitlement"
+        "4XX":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /admin/entitlements/{entitlementId}/revoke:
+    post:
+      tags: [entitlement]
+      summary: 管理面：撤销授权
+      operationId: revokeEntitlement
+      parameters:
+        - name: entitlementId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "202":
+          description: 撤销已受理
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Entitlement"
+        "4XX":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /releases/check:
+    post:
+      tags: [release]
+      summary: 检查客户端与已装套装的可用升级和吊销状态
+      operationId: checkReleases
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReleaseCheckRequest"
+      responses:
+        "200":
+          description: 升级与吊销结果
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReleaseCheckResponse"
+        "4XX":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /artifacts/{artifactId}/download-grant:
+    post:
+      tags: [artifact]
+      summary: 为已授权制品颁发短期下载许可
+      operationId: grantArtifactDownload
+      parameters:
+        - name: artifactId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: 下载许可
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DownloadGrant"
+        "4XX":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /packs/signing-key:
+    get:
+      tags: [artifact]
+      summary: 获取发布签名公钥（客户端钉住信任）
+      operationId: getSigningKey
+      security: []
+      responses:
+        "200":
+          description: 发布签名公钥
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [key_id, public_key_pem]
+                properties:
+                  key_id:
+                    type: string
+                  public_key_pem:
+                    type: string
+        default:
+          $ref: "#/components/responses/Error"
+  /packs/{packId}/download:
+    get:
+      tags: [artifact]
+      summary: 下载已授权套装制品（验设备凭据与授权；吊销版本返回 410）
+      operationId: downloadPack
+      parameters:
+        - $ref: "#/components/parameters/PackId"
+        - name: version
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: 已签名套装制品
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PackDownload"
+        "4XX":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /admin/packs:
+    post:
+      tags: [release]
+      summary: 管理面：上传套装，云端签名后发布（Console 使用管理凭据；同版本重发返回 409）
+      operationId: publishPack
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [manifest, files]
+              properties:
+                manifest: {}
+                files:
+                  type: object
+                  additionalProperties:
+                    type: string
+      responses:
+        "201":
+          description: 发布成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PackReleaseSummary"
+        "4XX":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /admin/packs/{packId}/{version}/revoke:
+    post:
+      tags: [release]
+      summary: 管理面：吊销已发布版本
+      operationId: revokePackRelease
+      parameters:
+        - $ref: "#/components/parameters/PackId"
+        - name: version
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "202":
+          description: 吊销已受理
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PackReleaseSummary"
+        "4XX":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /tasks:
+    post:
+      tags: [task]
+      summary: 创建云端任务（幂等）
+      operationId: createTask
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TaskCreateRequest"
+      responses:
+        "201":
+          description: 任务已创建
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+        "4XX":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /tasks/{taskId}:
+    get:
+      tags: [task]
+      summary: 查询任务状态
+      operationId: getTask
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+      responses:
+        "200":
+          description: 任务详情
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+        "4XX":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /tasks/{taskId}/cancel:
+    post:
+      tags: [task]
+      summary: 取消任务
+      operationId: cancelTask
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+      responses:
+        "202":
+          description: 取消请求已受理
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+        "4XX":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /tasks/{taskId}/events:
+    get:
+      tags: [task]
+      summary: 订阅任务进度事件（SSE，支持 Last-Event-ID 断线恢复）
+      operationId: streamTaskEvents
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+        - name: Last-Event-ID
+          in: header
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: SSE 事件流，事件负载见 contracts/events/task-event.v1.schema.json
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        "4XX":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    PackId:
+      name: packId
+      in: path
+      required: true
+      schema:
+        type: string
+    TaskId:
+      name: taskId
+      in: path
+      required: true
+      schema:
+        type: string
+    PageSize:
+      name: page_size
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    PageToken:
+      name: page_token
+      in: query
+      schema:
+        type: string
+  responses:
+    Error:
+      description: 统一错误响应
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiError"
+  schemas:
+    ApiError:
+      type: object
+      required: [code, message, request_id, retryable]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        request_id:
+          type: string
+        retryable:
+          type: boolean
+        details: {}
+    DeviceRegisterRequest:
+      type: object
+      required: [platform, app_version, device_fingerprint]
+      properties:
+        platform:
+          type: string
+          enum: [windows]
+        app_version:
+          type: string
+        device_fingerprint:
+          type: string
+        display_name:
+          type: string
+    Device:
+      type: object
+      required: [device_id, tenant_id, status, created_at]
+      properties:
+        device_id:
+          type: string
+        tenant_id:
+          type: string
+        status:
+          type: string
+          enum: [active, revoked]
+        created_at:
+          type: string
+          format: date-time
+        device_token:
+          type: string
+          description: 设备凭据，仅注册响应下发；客户端保存后作为 Bearer 凭据访问受保护接口
+    PackSummary:
+      type: object
+      required: [pack_id, name, latest_version, min_desktop_version]
+      properties:
+        pack_id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        latest_version:
+          type: string
+        min_desktop_version:
+          type: string
+        capabilities:
+          type: array
+          items:
+            type: object
+            required: [capability_id, version]
+            properties:
+              capability_id:
+                type: string
+              version:
+                type: string
+    PackList:
+      type: object
+      required: [packs]
+      properties:
+        packs:
+          type: array
+          items:
+            $ref: "#/components/schemas/PackSummary"
+        next_page_token:
+          type: string
+    Entitlement:
+      type: object
+      required: [entitlement_id, pack_id, scope, status, expires_at]
+      properties:
+        entitlement_id:
+          type: string
+        pack_id:
+          type: string
+        scope:
+          type: string
+          enum: [tenant, user, device]
+        status:
+          type: string
+          enum: [active, suspended, revoked]
+        expires_at:
+          type: string
+          format: date-time
+    ReleaseCheckRequest:
+      type: object
+      required: [desktop_version, installed_packs]
+      properties:
+        desktop_version:
+          type: string
+        channel:
+          type: string
+          enum: [stable, beta]
+          default: stable
+        installed_packs:
+          type: array
+          items:
+            type: object
+            required: [pack_id, version]
+            properties:
+              pack_id:
+                type: string
+              version:
+                type: string
+    ReleaseCheckResponse:
+      type: object
+      required: [desktop, packs]
+      properties:
+        desktop:
+          $ref: "#/components/schemas/ReleaseAdvice"
+        packs:
+          type: array
+          items:
+            allOf:
+              - $ref: "#/components/schemas/ReleaseAdvice"
+              - type: object
+                required: [pack_id]
+                properties:
+                  pack_id:
+                    type: string
+    ReleaseAdvice:
+      type: object
+      required: [action]
+      properties:
+        action:
+          type: string
+          enum: [none, update_available, update_required, revoked]
+        target_version:
+          type: string
+        artifact_id:
+          type: string
+    DownloadGrant:
+      type: object
+      required: [url, expires_at, digest, algorithm, signature_key_id]
+      properties:
+        url:
+          type: string
+          format: uri
+        expires_at:
+          type: string
+          format: date-time
+        digest:
+          type: string
+        algorithm:
+          type: string
+          enum: [sha256]
+        signature_key_id:
+          type: string
+    PackReleaseSummary:
+      type: object
+      required: [pack_id, version, status]
+      properties:
+        pack_id:
+          type: string
+        version:
+          type: string
+        status:
+          type: string
+          enum: [active, revoked]
+        digest:
+          type: string
+        signature_key_id:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+    PackDownload:
+      type: object
+      required: [pack, digest, signature_key_id]
+      properties:
+        pack:
+          type: object
+          description: 已签名的 LongHub Agent Pack（manifest + files + signature）
+        digest:
+          type: string
+        signature_key_id:
+          type: string
+    TaskCreateRequest:
+      type: object
+      required: [kind, input]
+      properties:
+        kind:
+          type: string
+          description: 任务类型，如 skill.execute
+        input: {}
+        budget:
+          type: object
+          properties:
+            max_tokens:
+              type: integer
+              minimum: 1
+            max_cost_cents:
+              type: integer
+              minimum: 0
+            max_duration_ms:
+              type: integer
+              minimum: 1
+    Task:
+      type: object
+      required: [task_id, kind, status, created_at]
+      properties:
+        task_id:
+          type: string
+        kind:
+          type: string
+        status:
+          type: string
+          enum: [pending, running, succeeded, failed, cancelled, timed_out]
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        error:
+          $ref: "#/components/schemas/ApiError"
+        output: {}
+
