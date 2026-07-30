@@ -1,23 +1,6 @@
 import { z } from "zod";
-
-/** 语义化版本，如 1.3.0 */
-export const semverSchema = z
-  .string()
-  .regex(/^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/, "必须是语义化版本号，如 1.3.0");
-
-/** 主次版本，如 1.0 */
-export const majorMinorSchema = z
-  .string()
-  .regex(/^\d+\.\d+$/, "必须是主次版本号，如 1.0");
-
-/** 权限声明，如 connector:hr-api:read */
-export const permissionSchema = z
-  .string()
-  .regex(/^[a-z][a-z0-9-]*(:[a-z0-9_.-]+)+$/, "权限格式：<类别>:<资源>[:<动作>]");
-
-export const packIdSchema = z
-  .string()
-  .regex(/^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*)+$/, "ID 使用点分小写命名，如 longhub.hr-suite");
+import { agentProfilePathSchema } from "./agent-profile.js";
+import { majorMinorSchema, packIdSchema, permissionSchema, semverSchema } from "./primitives.js";
 
 export const executionModeSchema = z.enum(["local", "cloud", "hybrid"]);
 
@@ -26,6 +9,7 @@ export const capabilityRefSchema = z.object({
   version: semverSchema,
   required: z.boolean().default(true),
   permissions: z.array(permissionSchema).default([]),
+  dependsOn: z.array(packIdSchema).max(32).optional(),
 });
 
 /** LongHub Pack Manifest V1（冻结契约） */
@@ -39,6 +23,7 @@ export const packManifestSchema = z.object({
   agentTemplate: z.object({
     id: packIdSchema,
     version: semverSchema,
+    profilePath: agentProfilePathSchema,
   }),
   capabilities: z.array(capabilityRefSchema).min(1),
   runtime: z.object({

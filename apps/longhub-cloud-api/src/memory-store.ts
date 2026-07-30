@@ -1,18 +1,27 @@
 /** 内存存储实现：用于测试与本地原型；生产部署使用 PgStore。 */
 import { randomUUID } from "node:crypto";
 import type { PackFile } from "@longhub/pack-schema";
+import { redactLogValue } from "@longhub/observability";
 import {
   TASK_EVENT_TYPE,
+  type ActivationCodeRecord,
+  type ActivationRedemptionResult,
   type AdminRecord,
   type AdminRole,
   type AuditLogRecord,
   type CloudStore,
+  type ClientTelemetryAggregateRecord,
   type CloudTask,
   type CloudTaskEvent,
   type CloudTaskStatus,
   type DeviceRecord,
   type EntitlementRecord,
   type EventListener,
+  type ModelGatewayConfigRecord,
+  type ModelRequestAggregateRecord,
+  type ModelUsageAggregateRecord,
+  type KnowledgeDocumentRecord,
+  type PackReviewRecord,
   type OrderRecord,
   type PackReleaseRecord,
   type ProductRecord,
@@ -29,6 +38,7 @@ export class MemoryStore implements CloudStore {
   private readonly listeners = new Map<string, Set<EventListener>>();
   private readonly idempotency = new Map<string, string>();
   private readonly devices = new Map<string, DeviceRecord>();
+  private readonly activationCodes = new Map<string, ActivationCodeRecord>();
   private readonly entitlements = new Map<string, EntitlementRecord>();
   private readonly releases = new Map<string, PackReleaseRecord>();
   private readonly users = new Map<string, UserRecord>();
@@ -38,6 +48,12 @@ export class MemoryStore implements CloudStore {
   private readonly products = new Map<string, ProductRecord>();
   private readonly orders = new Map<string, OrderRecord>();
   private readonly transactions: WalletTransactionRecord[] = [];
+  private readonly modelGatewayConfigs = new Map<string, ModelGatewayConfigRecord>();
+  private readonly clientTelemetry = new Map<string, ClientTelemetryAggregateRecord>();
+  private readonly modelRequestMetrics = new Map<string, ModelRequestAggregateRecord>();
+  private readonly modelUsage = new Map<string, ModelUsageAggregateRecord>();
+  private readonly knowledgeDocuments = new Map<string, KnowledgeDocumentRecord>();
+  private readonly packReviews = new Map<string, PackReviewRecord>();
   private taskSeq = 0;
   private eventSeq = 0;
 
@@ -145,6 +161,100 @@ export class MemoryStore implements CloudStore {
     return device;
   }
 
+  async updateDeviceOperations(deviceId: string, patch: Partial<Pick<DeviceRecord, "status" | "last_seen_at" | "last_model_success_at" | "last_error_code" | "credential_rotated_at" | "min_required_version" | "rollout_group" | "device_token">>): Promise<DeviceRecord | undefined> {
+    const device = this.devices.get(deviceId);
+    if (!device) return undefined;
+    Object.assign(device, patch);
+    return { ...device };
+  }
+
+  async createActivationCode(params: {
+    tenant_id: string;
+    code_hash: string;
+    code_hint: string;
+    label?: string;
+    max_uses: number;
+    pack_ids: string[];
+    expires_at: string;
+  }): Promise<ActivationCodeRecord> {
+    const record: ActivationCodeRecord = {
+      activation_code_id: `act-${randomUUID()}`,
+      ...params,
+      pack_ids: [...params.pack_ids],
+      status: "active",
+      use_count: 0,
+      created_at: new Date().toISOString(),
+    };
+    this.activationCodes.set(record.activation_code_id, record);
+    return { ...record, pack_ids: [...record.pack_ids] };
+  }
+
+  async getActivationCode(activationCodeId: string): Promise<ActivationCodeRecord | undefined> {
+    const record = this.activationCodes.get(activationCodeId);
+    return record ? { ...record, pack_ids: [...record.pack_ids] } : undefined;
+  }
+
+  async listActivationCodes(): Promise<ActivationCodeRecord[]> {
+    return [...this.activationCodes.values()].map((record) => ({ ...record, pack_ids: [...record.pack_ids] }));
+  }
+
+  async revokeActivationCode(activationCodeId: string): Promise<ActivationCodeRecord | undefined> {
+    const record = this.activationCodes.get(activationCodeId);
+    if (!record) return undefined;
+    record.status = "revoked";
+    return { ...record, pack_ids: [...record.pack_ids] };
+  }
+
+  async redeemActivationCode(params: {
+    device_id: string;
+    code_hash: string;
+    now: string;
+  }): Promise<ActivationRedemptionResult> {
+    const device = this.devices.get(params.device_id);
+    if (!device) return { ok: false, reason: "DEVICE_NOT_FOUND" };
+    const code = [...this.activationCodes.values()].find((candidate) => candidate.code_hash === params.code_hash);
+    if (!code || code.tenant_id !== device.tenant_id || code.status !== "active" || code.expires_at <= params.now) {
+      return { ok: false, reason: "CODE_UNAVAILABLE" };
+    }
+    if (device.activation_code_id === code.activation_code_id) {
+      return { ok: true, code: { ...code, pack_ids: [...code.pack_ids] }, device: { ...device }, alreadyActivated: true };
+    }
+    if (code.use_count >= code.max_uses) return { ok: false, reason: "CODE_UNAVAILABLE" };
+
+    const previousActivationCodeId = device.activation_code_id;
+    if (previousActivationCodeId) {
+      for (const entitlement of this.entitlements.values()) {
+        if (entitlement.device_id === device.device_id && entitlement.source_activation_code_id === previousActivationCodeId) {
+          entitlement.status = "revoked";
+        }
+      }
+    }
+    code.use_count += 1;
+    device.activation_code_id = code.activation_code_id;
+    device.activated_at = params.now;
+    for (const packId of code.pack_ids) {
+      const exists = [...this.entitlements.values()].some((entitlement) =>
+        entitlement.device_id === device.device_id && entitlement.pack_id === packId &&
+        entitlement.status === "active" && entitlement.expires_at > params.now,
+      );
+      if (!exists) {
+        const entitlement: EntitlementRecord = {
+          entitlement_id: `ent-${randomUUID()}`,
+          tenant_id: device.tenant_id,
+          device_id: device.device_id,
+          pack_id: packId,
+          scope: "device",
+          status: "active",
+          expires_at: code.expires_at,
+          source_activation_code_id: code.activation_code_id,
+          created_at: params.now,
+        };
+        this.entitlements.set(entitlement.entitlement_id, entitlement);
+      }
+    }
+    return { ok: true, code: { ...code, pack_ids: [...code.pack_ids] }, device: { ...device }, alreadyActivated: false };
+  }
+
   async createUser(params: { email: string; password_hash: string }): Promise<{ user: UserRecord; existed: boolean }> {
     for (const user of this.users.values()) {
       if (user.email === params.email) return { user, existed: true };
@@ -244,7 +354,7 @@ export class MemoryStore implements CloudStore {
       audit_id: `aud-${randomUUID()}`,
       actor,
       action,
-      detail,
+      detail: redactLogValue(detail),
       created_at: new Date().toISOString(),
     };
     this.audits.push(record);
@@ -439,6 +549,87 @@ export class MemoryStore implements CloudStore {
     release.status = "revoked";
     return release;
   }
+
+  async getModelGatewayConfig(configId = "default"): Promise<ModelGatewayConfigRecord | undefined> {
+    const config = this.modelGatewayConfigs.get(configId);
+    return config ? structuredClone(config) : undefined;
+  }
+
+  async listModelGatewayConfigs(): Promise<ModelGatewayConfigRecord[]> {
+    return [...this.modelGatewayConfigs.values()].map((config) => structuredClone(config));
+  }
+
+  async setModelGatewayConfig(config: ModelGatewayConfigRecord): Promise<ModelGatewayConfigRecord> {
+    this.modelGatewayConfigs.set(config.config_id, structuredClone(config));
+    return structuredClone(config);
+  }
+
+  async incrementClientTelemetry(records: readonly ClientTelemetryAggregateRecord[]): Promise<void> {
+    for (const record of records) {
+      const key = [
+        record.bucket_start, record.event_type, record.desktop_version, record.openclaw_version,
+        record.platform, record.architecture, record.value, record.agent_count_bucket,
+      ].join("\u0000");
+      const existing = this.clientTelemetry.get(key);
+      if (existing) existing.count += record.count;
+      else this.clientTelemetry.set(key, { ...record });
+    }
+  }
+
+  async listClientTelemetry(): Promise<ClientTelemetryAggregateRecord[]> {
+    return [...this.clientTelemetry.values()].map((record) => ({ ...record }));
+  }
+
+  async incrementModelRequestMetrics(records: readonly ModelRequestAggregateRecord[]): Promise<void> {
+    for (const record of records) {
+      const key = [record.bucket_start, record.api_type, record.outcome, record.latency_bucket].join("\u0000");
+      const existing = this.modelRequestMetrics.get(key);
+      if (existing) existing.count += record.count;
+      else this.modelRequestMetrics.set(key, { ...record });
+    }
+  }
+
+  async listModelRequestMetrics(): Promise<ModelRequestAggregateRecord[]> {
+    return [...this.modelRequestMetrics.values()].map((record) => ({ ...record }));
+  }
+
+  async incrementModelUsage(records: readonly ModelUsageAggregateRecord[]): Promise<void> {
+    for (const record of records) {
+      const key = [record.period_start, record.period, record.tenant_id, record.device_id, record.config_id].join("\u0000");
+      const current = this.modelUsage.get(key);
+      if (!current) this.modelUsage.set(key, { ...record });
+      else for (const field of ["request_count", "success_count", "error_count", "input_tokens", "output_tokens", "cache_tokens", "estimated_tokens", "cost_microunits"] as const) current[field] += record[field];
+    }
+  }
+
+  async listModelUsage(): Promise<ModelUsageAggregateRecord[]> {
+    return [...this.modelUsage.values()].map((record) => ({ ...record }));
+  }
+
+  async createKnowledgeDocument(params: Omit<KnowledgeDocumentRecord, "document_id" | "created_at">): Promise<KnowledgeDocumentRecord> {
+    const record = { ...params, document_id: `doc-${randomUUID()}`, created_at: new Date().toISOString() };
+    this.knowledgeDocuments.set(record.document_id, record);
+    return { ...record };
+  }
+
+  async listKnowledgeDocuments(tenantId: string): Promise<KnowledgeDocumentRecord[]> {
+    return [...this.knowledgeDocuments.values()].filter((record) => record.tenant_id === tenantId).map((record) => ({ ...record }));
+  }
+
+  async deleteKnowledgeDocument(documentId: string): Promise<KnowledgeDocumentRecord | undefined> {
+    const record = this.knowledgeDocuments.get(documentId);
+    if (record) this.knowledgeDocuments.delete(documentId);
+    return record ? { ...record } : undefined;
+  }
+
+  async createPackReview(params: { publisher: string; pack: PackFile; findings: string[] }): Promise<PackReviewRecord> {
+    const now = new Date().toISOString();
+    const record: PackReviewRecord = { review_id: `review-${randomUUID()}`, publisher: params.publisher, pack: structuredClone(params.pack), status: params.findings.length ? "rejected" : "submitted", findings: [...params.findings], created_at: now, updated_at: now };
+    this.packReviews.set(record.review_id, record); return structuredClone(record);
+  }
+  async getPackReview(reviewId: string): Promise<PackReviewRecord | undefined> { const value = this.packReviews.get(reviewId); return value ? structuredClone(value) : undefined; }
+  async listPackReviews(): Promise<PackReviewRecord[]> { return [...this.packReviews.values()].map((value) => structuredClone(value)); }
+  async updatePackReview(reviewId: string, patch: Pick<PackReviewRecord, "status" | "findings">): Promise<PackReviewRecord | undefined> { const value = this.packReviews.get(reviewId); if (!value) return undefined; Object.assign(value, patch, { updated_at: new Date().toISOString() }); return structuredClone(value); }
 
   async close(): Promise<void> {
     // 内存实现无需释放资源

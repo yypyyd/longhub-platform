@@ -1,0 +1,24 @@
+{
+  "id": "longhub-tool-bridge",
+  "name": "LongHub Tool Bridge",
+  "description": "将 OpenClaw 原生工具调用安全转发到 LongHub Core。",
+  "version": "0.1.0",
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+  },
+  "contracts": {
+    "tools": [
+      "longhub_resume_screen"
+    ]
+  },
+  "toolMetadata": {
+    "longhub_resume_screen": {
+      "optional": true
+    }
+  }
+}

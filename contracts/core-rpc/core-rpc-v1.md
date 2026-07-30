@@ -19,7 +19,7 @@ Desktop Main / Renderer / Core / Skill Worker 之间的本地 RPC 契约。传�
 | `core.hello` | 版本协商，返回 Core RPC 版本与 Desktop 版本 |
 | `session.create` | 创建会话 |
 | `session.list` | 列出会话 |
-| `task.submit` | 提交用户任务（含预算） |
+| `task.submit` | 提交无企业权限的历史原型任务（可降低但不能抬高预算） |
 | `task.cancel` | 取消任务 |
 | `task.get` | 查询任务状态 |
 | `pack.list` | 列出已安装套装 |
@@ -36,6 +36,14 @@ Desktop Main / Renderer / Core / Skill Worker 之间的本地 RPC 契约。传�
 | `event.confirm.request` | 请求人工确认（写文件、发消息、改企业数据、付款、删除） |
 | `event.pack` | 套装安装/升级/回滚进度 |
 
+### Desktop Main → Core
+
+| 方法 | 说明 |
+| --- | --- |
+| `bridge.execute` | 使用 OpenClaw Bridge 注入的可信 Agent/Session/ToolCall 上下文请求企业技能 |
+| `bridge.policy.replace` | 生命周期事务整表替换当前有效 Agent Bridge policy；同时使旧待确认记录失效 |
+| `confirm.respond` | 转发用户对 Core 待确认记录的批准或拒绝 |
+
 ### Core → Skill Worker
 
 | 方法 | 说明 |
@@ -46,5 +54,9 @@ Desktop Main / Renderer / Core / Skill Worker 之间的本地 RPC 契约。传�
 ## 约束
 
 - Renderer 不得直接访问系统资源；所有敏感操作经 Core 的权限交集计算与人工确认。
+- `task.submit`、Bridge 工具参数和 Profile 文本都不得授予权限；需要企业权限的技能只能使用
+  `bridge.execute` 可信 Agent/Session/ToolCall 上下文，并由 Core 重新计算授权。
+- `confirm.respond` 只处理 Core 已创建的待确认记录；记录绑定 Agent、Profile 版本、Session、
+  ToolCall、权限和输入摘要，过期或消费后不可复用。
 - 所有方法幂等或可安全重试；`task.submit` 必须携带客户端生成的幂等键。
 - 破坏性变更需提升主版本（`rpc: "2.0"`）并保留 V1 兼容期。

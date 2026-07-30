@@ -1,0 +1,1180 @@
+{
+  "schema": "longhub/openclaw-external-runtime/v1",
+  "openclawVersion": "2026.7.1-2",
+  "roots": [
+    "openclaw",
+    "@longhub/openclaw-bridge"
+  ],
+  "packages": [
+    "@agentclientprotocol/sdk",
+    "@anthropic-ai/sdk",
+    "@babel/runtime",
+    "@borewit/text-codec",
+    "@clack/core",
+    "@clack/prompts",
+    "@earendil-works/pi-tui",
+    "@google/genai",
+    "@grammyjs/runner",
+    "@grammyjs/transformer-throttler",
+    "@grammyjs/types",
+    "@homebridge/ciao",
+    "@hono/node-server",
+    "@isaacs/fs-minipass",
+    "@longhub/openclaw-bridge",
+    "@lydell/node-pty",
+    "@lydell/node-pty-win32-x64",
+    "@mistralai/mistralai",
+    "@modelcontextprotocol/sdk",
+    "@mozilla/readability",
+    "@openclaw/ai",
+    "@openclaw/fs-safe",
+    "@openclaw/proxyline",
+    "@opentelemetry/semantic-conventions",
+    "@protobufjs/aspromise",
+    "@protobufjs/base64",
+    "@protobufjs/codegen",
+    "@protobufjs/eventemitter",
+    "@protobufjs/fetch",
+    "@protobufjs/float",
+    "@protobufjs/path",
+    "@protobufjs/pool",
+    "@protobufjs/utf8",
+    "@silvia-odwyer/photon-node",
+    "@stablelib/base64",
+    "@tokenizer/inflate",
+    "@tokenizer/token",
+    "@types/node",
+    "@types/retry",
+    "abort-controller",
+    "accepts",
+    "agent-base",
+    "ajv",
+    "ajv-formats",
+    "ansi-regex",
+    "ansi-styles",
+    "asn1.js",
+    "balanced-match",
+    "base64-js",
+    "bignumber.js",
+    "bn.js",
+    "body-parser",
+    "boolbase",
+    "bottleneck",
+    "brace-expansion",
+    "buffer-equal-constant-time",
+    "buffer-from",
+    "bytes",
+    "call-bind-apply-helpers",
+    "call-bound",
+    "camelcase",
+    "chalk",
+    "chokidar",
+    "chownr",
+    "clawpdf",
+    "cliui",
+    "color-convert",
+    "color-name",
+    "commander",
+    "content-disposition",
+    "content-type",
+    "cookie",
+    "cookie-signature",
+    "core-util-is",
+    "cors",
+    "croner",
+    "cross-spawn",
+    "css-select",
+    "css-what",
+    "cssom",
+    "data-uri-to-buffer",
+    "debug",
+    "decamelize",
+    "depd",
+    "diff",
+    "dijkstrajs",
+    "dom-serializer",
+    "domelementtype",
+    "domhandler",
+    "domutils",
+    "dotenv",
+    "dunder-proto",
+    "ecdsa-sig-formatter",
+    "ee-first",
+    "emoji-regex",
+    "encodeurl",
+    "encoding",
+    "entities",
+    "es-define-property",
+    "es-errors",
+    "es-object-atoms",
+    "escalade",
+    "escape-html",
+    "etag",
+    "event-target-shim",
+    "eventsource",
+    "eventsource-parser",
+    "express",
+    "express-rate-limit",
+    "extend",
+    "fast-deep-equal",
+    "fast-sha256",
+    "fast-string-truncated-width",
+    "fast-string-width",
+    "fast-uri",
+    "fast-wrap-ansi",
+    "fetch-blob",
+    "file-type",
+    "finalhandler",
+    "find-up",
+    "formdata-polyfill",
+    "forwarded",
+    "fresh",
+    "function-bind",
+    "gaxios",
+    "gcp-metadata",
+    "get-caller-file",
+    "get-east-asian-width",
+    "get-intrinsic",
+    "get-proto",
+    "glob",
+    "google-auth-library",
+    "google-logging-utils",
+    "gopd",
+    "graceful-fs",
+    "grammy",
+    "has-symbols",
+    "hasown",
+    "highlight.js",
+    "hono",
+    "hosted-git-info",
+    "html-escaper",
+    "htmlparser2",
+    "http-errors",
+    "http_ece",
+    "https-proxy-agent",
+    "iconv-lite",
+    "ieee754",
+    "ignore",
+    "immediate",
+    "inherits",
+    "ip-address",
+    "ipaddr.js",
+    "is-fullwidth-code-point",
+    "is-promise",
+    "isarray",
+    "isexe",
+    "jiti",
+    "jose",
+    "json-bigint",
+    "json-schema-to-ts",
+    "json-schema-traverse",
+    "json-schema-typed",
+    "json5",
+    "jszip",
+    "jwa",
+    "jws",
+    "kysely",
+    "lie",
+    "linkedom",
+    "locate-path",
+    "long",
+    "lru-cache",
+    "marked",
+    "math-intrinsics",
+    "media-typer",
+    "merge-descriptors",
+    "mime-db",
+    "mime-types",
+    "minimalistic-assert",
+    "minimatch",
+    "minimist",
+    "minipass",
+    "minizlib",
+    "ms",
+    "negotiator",
+    "node-addon-api",
+    "node-domexception",
+    "node-edge-tts",
+    "node-fetch",
+    "node-gyp-build",
+    "nth-check",
+    "object-assign",
+    "object-inspect",
+    "on-finished",
+    "once",
+    "openai",
+    "openclaw",
+    "p-limit",
+    "p-locate",
+    "p-retry",
+    "p-try",
+    "pako",
+    "parseurl",
+    "partial-json",
+    "path-exists",
+    "path-key",
+    "path-scurry",
+    "path-to-regexp",
+    "pkce-challenge",
+    "playwright-core",
+    "pngjs",
+    "process-nextick-args",
+    "proper-lockfile",
+    "protobufjs",
+    "proxy-addr",
+    "qrcode",
+    "qs",
+    "quickjs-wasi",
+    "range-parser",
+    "rastermill",
+    "raw-body",
+    "readable-stream",
+    "readdirp",
+    "require-directory",
+    "require-from-string",
+    "require-main-filename",
+    "retry",
+    "router",
+    "safe-buffer",
+    "safer-buffer",
+    "send",
+    "serve-static",
+    "set-blocking",
+    "setimmediate",
+    "setprototypeof",
+    "shebang-command",
+    "shebang-regex",
+    "side-channel",
+    "side-channel-list",
+    "side-channel-map",
+    "side-channel-weakmap",
+    "signal-exit",
+    "sisteransi",
+    "source-map",
+    "source-map-support",
+    "sqlite-vec",
+    "sqlite-vec-windows-x64",
+    "standardwebhooks",
+    "statuses",
+    "string-width",
+    "string_decoder",
+    "strip-ansi",
+    "strtok3",
+    "tar",
+    "toidentifier",
+    "token-types",
+    "tr46",
+    "tree-sitter-bash",
+    "ts-algebra",
+    "tslib",
+    "tslog",
+    "type-is",
+    "typebox",
+    "typescript",
+    "uhyphen",
+    "uint8array-extras",
+    "undici",
+    "undici-types",
+    "unpipe",
+    "util-deprecate",
+    "vary",
+    "web-push",
+    "web-streams-polyfill",
+    "web-tree-sitter",
+    "webidl-conversions",
+    "whatwg-url",
+    "which",
+    "which-module",
+    "wrap-ansi",
+    "wrappy",
+    "ws",
+    "y18n",
+    "yallist",
+    "yaml",
+    "yargs",
+    "yargs-parser",
+    "zod",
+    "zod-to-json-schema"
+  ],
+  "resolvedVersions": {
+    "@agentclientprotocol/sdk": [
+      "1.1.0"
+    ],
+    "@anthropic-ai/sdk": [
+      "0.109.1"
+    ],
+    "@babel/runtime": [
+      "7.29.7"
+    ],
+    "@borewit/text-codec": [
+      "0.2.2"
+    ],
+    "@clack/core": [
+      "1.4.2"
+    ],
+    "@clack/prompts": [
+      "1.6.0"
+    ],
+    "@earendil-works/pi-tui": [
+      "0.80.3"
+    ],
+    "@google/genai": [
+      "2.10.0"
+    ],
+    "@grammyjs/runner": [
+      "2.0.3"
+    ],
+    "@grammyjs/transformer-throttler": [
+      "1.2.1"
+    ],
+    "@grammyjs/types": [
+      "3.28.0"
+    ],
+    "@homebridge/ciao": [
+      "1.3.9"
+    ],
+    "@hono/node-server": [
+      "1.19.17"
+    ],
+    "@isaacs/fs-minipass": [
+      "4.0.1"
+    ],
+    "@longhub/openclaw-bridge": [
+      "0.1.0"
+    ],
+    "@lydell/node-pty": [
+      "1.2.0-beta.12"
+    ],
+    "@lydell/node-pty-win32-x64": [
+      "1.2.0-beta.12"
+    ],
+    "@mistralai/mistralai": [
+      "2.4.0"
+    ],
+    "@modelcontextprotocol/sdk": [
+      "1.29.0"
+    ],
+    "@mozilla/readability": [
+      "0.6.0"
+    ],
+    "@openclaw/ai": [
+      "2026.7.1-2"
+    ],
+    "@openclaw/fs-safe": [
+      "0.4.1"
+    ],
+    "@openclaw/proxyline": [
+      "0.3.3"
+    ],
+    "@opentelemetry/semantic-conventions": [
+      "1.43.0"
+    ],
+    "@protobufjs/aspromise": [
+      "1.1.2"
+    ],
+    "@protobufjs/base64": [
+      "1.1.2"
+    ],
+    "@protobufjs/codegen": [
+      "2.0.5"
+    ],
+    "@protobufjs/eventemitter": [
+      "1.1.1"
+    ],
+    "@protobufjs/fetch": [
+      "1.1.1"
+    ],
+    "@protobufjs/float": [
+      "1.0.2"
+    ],
+    "@protobufjs/path": [
+      "1.1.2"
+    ],
+    "@protobufjs/pool": [
+      "1.1.0"
+    ],
+    "@protobufjs/utf8": [
+      "1.1.2"
+    ],
+    "@silvia-odwyer/photon-node": [
+      "0.3.4"
+    ],
+    "@stablelib/base64": [
+      "1.0.1"
+    ],
+    "@tokenizer/inflate": [
+      "0.4.1"
+    ],
+    "@tokenizer/token": [
+      "0.3.0"
+    ],
+    "@types/node": [
+      "20.19.43"
+    ],
+    "@types/retry": [
+      "0.12.0"
+    ],
+    "abort-controller": [
+      "3.0.0"
+    ],
+    "accepts": [
+      "2.0.0"
+    ],
+    "agent-base": [
+      "7.1.4"
+    ],
+    "ajv": [
+      "8.20.0"
+    ],
+    "ajv-formats": [
+      "3.0.1"
+    ],
+    "ansi-regex": [
+      "5.0.1"
+    ],
+    "ansi-styles": [
+      "4.3.0"
+    ],
+    "asn1.js": [
+      "5.4.1"
+    ],
+    "balanced-match": [
+      "4.0.4"
+    ],
+    "base64-js": [
+      "1.5.1"
+    ],
+    "bignumber.js": [
+      "9.3.1"
+    ],
+    "bn.js": [
+      "4.12.5"
+    ],
+    "body-parser": [
+      "2.3.0"
+    ],
+    "boolbase": [
+      "1.0.0"
+    ],
+    "bottleneck": [
+      "2.19.5"
+    ],
+    "brace-expansion": [
+      "5.0.8"
+    ],
+    "buffer-equal-constant-time": [
+      "1.0.1"
+    ],
+    "buffer-from": [
+      "1.1.2"
+    ],
+    "bytes": [
+      "3.1.2"
+    ],
+    "call-bind-apply-helpers": [
+      "1.0.2"
+    ],
+    "call-bound": [
+      "1.0.4"
+    ],
+    "camelcase": [
+      "5.3.1"
+    ],
+    "chalk": [
+      "5.6.2"
+    ],
+    "chokidar": [
+      "5.0.0"
+    ],
+    "chownr": [
+      "3.0.0"
+    ],
+    "clawpdf": [
+      "0.3.0"
+    ],
+    "cliui": [
+      "6.0.0",
+      "8.0.1"
+    ],
+    "color-convert": [
+      "2.0.1"
+    ],
+    "color-name": [
+      "1.1.4"
+    ],
+    "commander": [
+      "15.0.0"
+    ],
+    "content-disposition": [
+      "1.1.0"
+    ],
+    "content-type": [
+      "1.0.5",
+      "2.0.0"
+    ],
+    "cookie": [
+      "0.7.2"
+    ],
+    "cookie-signature": [
+      "1.2.2"
+    ],
+    "core-util-is": [
+      "1.0.3"
+    ],
+    "cors": [
+      "2.8.6"
+    ],
+    "croner": [
+      "10.0.1"
+    ],
+    "cross-spawn": [
+      "7.0.6"
+    ],
+    "css-select": [
+      "5.2.2"
+    ],
+    "css-what": [
+      "6.2.2"
+    ],
+    "cssom": [
+      "0.5.0"
+    ],
+    "data-uri-to-buffer": [
+      "4.0.1"
+    ],
+    "debug": [
+      "4.4.3"
+    ],
+    "decamelize": [
+      "1.2.0"
+    ],
+    "depd": [
+      "2.0.0"
+    ],
+    "diff": [
+      "9.0.0"
+    ],
+    "dijkstrajs": [
+      "1.0.3"
+    ],
+    "dom-serializer": [
+      "2.0.0"
+    ],
+    "domelementtype": [
+      "2.3.0"
+    ],
+    "domhandler": [
+      "5.0.3"
+    ],
+    "domutils": [
+      "3.2.2"
+    ],
+    "dotenv": [
+      "17.4.2"
+    ],
+    "dunder-proto": [
+      "1.0.1"
+    ],
+    "ecdsa-sig-formatter": [
+      "1.0.11"
+    ],
+    "ee-first": [
+      "1.1.1"
+    ],
+    "emoji-regex": [
+      "8.0.0"
+    ],
+    "encodeurl": [
+      "2.0.0"
+    ],
+    "encoding": [
+      "0.1.13"
+    ],
+    "entities": [
+      "4.5.0",
+      "7.0.1"
+    ],
+    "es-define-property": [
+      "1.0.1"
+    ],
+    "es-errors": [
+      "1.3.0"
+    ],
+    "es-object-atoms": [
+      "1.1.2"
+    ],
+    "escalade": [
+      "3.2.0"
+    ],
+    "escape-html": [
+      "1.0.3"
+    ],
+    "etag": [
+      "1.8.1"
+    ],
+    "event-target-shim": [
+      "5.0.1"
+    ],
+    "eventsource": [
+      "3.0.7"
+    ],
+    "eventsource-parser": [
+      "3.1.0"
+    ],
+    "express": [
+      "5.2.1"
+    ],
+    "express-rate-limit": [
+      "8.6.1"
+    ],
+    "extend": [
+      "3.0.2"
+    ],
+    "fast-deep-equal": [
+      "3.1.3"
+    ],
+    "fast-sha256": [
+      "1.3.0"
+    ],
+    "fast-string-truncated-width": [
+      "3.0.3"
+    ],
+    "fast-string-width": [
+      "3.0.2"
+    ],
+    "fast-uri": [
+      "3.1.4"
+    ],
+    "fast-wrap-ansi": [
+      "0.2.2"
+    ],
+    "fetch-blob": [
+      "3.2.0"
+    ],
+    "file-type": [
+      "22.0.1"
+    ],
+    "finalhandler": [
+      "2.1.1"
+    ],
+    "find-up": [
+      "4.1.0"
+    ],
+    "formdata-polyfill": [
+      "4.0.10"
+    ],
+    "forwarded": [
+      "0.2.0"
+    ],
+    "fresh": [
+      "2.0.0"
+    ],
+    "function-bind": [
+      "1.1.2"
+    ],
+    "gaxios": [
+      "7.3.0"
+    ],
+    "gcp-metadata": [
+      "8.1.2"
+    ],
+    "get-caller-file": [
+      "2.0.5"
+    ],
+    "get-east-asian-width": [
+      "1.6.0"
+    ],
+    "get-intrinsic": [
+      "1.3.0"
+    ],
+    "get-proto": [
+      "1.0.1"
+    ],
+    "glob": [
+      "13.0.6"
+    ],
+    "google-auth-library": [
+      "10.9.1"
+    ],
+    "google-logging-utils": [
+      "1.1.3"
+    ],
+    "gopd": [
+      "1.2.0"
+    ],
+    "graceful-fs": [
+      "4.2.11"
+    ],
+    "grammy": [
+      "1.44.0"
+    ],
+    "has-symbols": [
+      "1.1.0"
+    ],
+    "hasown": [
+      "2.0.4"
+    ],
+    "highlight.js": [
+      "11.11.1"
+    ],
+    "hono": [
+      "4.12.32"
+    ],
+    "hosted-git-info": [
+      "10.1.1"
+    ],
+    "html-escaper": [
+      "3.0.3"
+    ],
+    "htmlparser2": [
+      "10.1.0"
+    ],
+    "http_ece": [
+      "1.2.0"
+    ],
+    "http-errors": [
+      "2.0.1"
+    ],
+    "https-proxy-agent": [
+      "7.0.6"
+    ],
+    "iconv-lite": [
+      "0.6.3",
+      "0.7.3"
+    ],
+    "ieee754": [
+      "1.2.1"
+    ],
+    "ignore": [
+      "7.0.5"
+    ],
+    "immediate": [
+      "3.0.6"
+    ],
+    "inherits": [
+      "2.0.4"
+    ],
+    "ip-address": [
+      "10.3.1"
+    ],
+    "ipaddr.js": [
+      "1.9.1"
+    ],
+    "is-fullwidth-code-point": [
+      "3.0.0"
+    ],
+    "is-promise": [
+      "4.0.0"
+    ],
+    "isarray": [
+      "1.0.0"
+    ],
+    "isexe": [
+      "2.0.0"
+    ],
+    "jiti": [
+      "2.7.0"
+    ],
+    "jose": [
+      "6.2.4"
+    ],
+    "json-bigint": [
+      "1.0.0"
+    ],
+    "json-schema-to-ts": [
+      "3.1.1"
+    ],
+    "json-schema-traverse": [
+      "1.0.0"
+    ],
+    "json-schema-typed": [
+      "8.0.2"
+    ],
+    "json5": [
+      "2.2.3"
+    ],
+    "jszip": [
+      "3.10.1"
+    ],
+    "jwa": [
+      "2.0.1"
+    ],
+    "jws": [
+      "4.0.1"
+    ],
+    "kysely": [
+      "0.29.2"
+    ],
+    "lie": [
+      "3.3.0"
+    ],
+    "linkedom": [
+      "0.18.12"
+    ],
+    "locate-path": [
+      "5.0.0"
+    ],
+    "long": [
+      "5.3.2"
+    ],
+    "lru-cache": [
+      "11.5.2"
+    ],
+    "marked": [
+      "18.0.5"
+    ],
+    "math-intrinsics": [
+      "1.1.0"
+    ],
+    "media-typer": [
+      "1.1.1"
+    ],
+    "merge-descriptors": [
+      "2.0.0"
+    ],
+    "mime-db": [
+      "1.54.0"
+    ],
+    "mime-types": [
+      "3.0.2"
+    ],
+    "minimalistic-assert": [
+      "1.0.1"
+    ],
+    "minimatch": [
+      "10.2.5"
+    ],
+    "minimist": [
+      "1.2.8"
+    ],
+    "minipass": [
+      "7.1.3"
+    ],
+    "minizlib": [
+      "3.1.0"
+    ],
+    "ms": [
+      "2.1.3"
+    ],
+    "negotiator": [
+      "1.0.0"
+    ],
+    "node-addon-api": [
+      "8.9.0"
+    ],
+    "node-domexception": [
+      "1.0.0"
+    ],
+    "node-edge-tts": [
+      "1.2.10"
+    ],
+    "node-fetch": [
+      "2.7.0",
+      "3.3.2"
+    ],
+    "node-gyp-build": [
+      "4.8.4"
+    ],
+    "nth-check": [
+      "2.1.1"
+    ],
+    "object-assign": [
+      "4.1.1"
+    ],
+    "object-inspect": [
+      "1.13.4"
+    ],
+    "on-finished": [
+      "2.4.1"
+    ],
+    "once": [
+      "1.4.0"
+    ],
+    "openai": [
+      "6.45.0"
+    ],
+    "openclaw": [
+      "2026.7.1-2"
+    ],
+    "p-limit": [
+      "2.3.0"
+    ],
+    "p-locate": [
+      "4.1.0"
+    ],
+    "p-retry": [
+      "4.6.2"
+    ],
+    "p-try": [
+      "2.2.0"
+    ],
+    "pako": [
+      "1.0.11"
+    ],
+    "parseurl": [
+      "1.3.3"
+    ],
+    "partial-json": [
+      "0.1.7"
+    ],
+    "path-exists": [
+      "4.0.0"
+    ],
+    "path-key": [
+      "3.1.1"
+    ],
+    "path-scurry": [
+      "2.0.2"
+    ],
+    "path-to-regexp": [
+      "8.4.2"
+    ],
+    "pkce-challenge": [
+      "5.0.1"
+    ],
+    "playwright-core": [
+      "1.61.1"
+    ],
+    "pngjs": [
+      "5.0.0"
+    ],
+    "process-nextick-args": [
+      "2.0.1"
+    ],
+    "proper-lockfile": [
+      "4.1.2"
+    ],
+    "protobufjs": [
+      "7.6.5"
+    ],
+    "proxy-addr": [
+      "2.0.7"
+    ],
+    "qrcode": [
+      "1.5.4"
+    ],
+    "qs": [
+      "6.15.3"
+    ],
+    "quickjs-wasi": [
+      "3.0.2"
+    ],
+    "range-parser": [
+      "1.3.0"
+    ],
+    "rastermill": [
+      "0.3.1"
+    ],
+    "raw-body": [
+      "3.0.2"
+    ],
+    "readable-stream": [
+      "2.3.8"
+    ],
+    "readdirp": [
+      "5.0.0"
+    ],
+    "require-directory": [
+      "2.1.1"
+    ],
+    "require-from-string": [
+      "2.0.2"
+    ],
+    "require-main-filename": [
+      "2.0.0"
+    ],
+    "retry": [
+      "0.12.0",
+      "0.13.1"
+    ],
+    "router": [
+      "2.2.0"
+    ],
+    "safe-buffer": [
+      "5.1.2",
+      "5.2.1"
+    ],
+    "safer-buffer": [
+      "2.1.2"
+    ],
+    "send": [
+      "1.2.1"
+    ],
+    "serve-static": [
+      "2.2.1"
+    ],
+    "set-blocking": [
+      "2.0.0"
+    ],
+    "setimmediate": [
+      "1.0.5"
+    ],
+    "setprototypeof": [
+      "1.2.0"
+    ],
+    "shebang-command": [
+      "2.0.0"
+    ],
+    "shebang-regex": [
+      "3.0.0"
+    ],
+    "side-channel": [
+      "1.1.1"
+    ],
+    "side-channel-list": [
+      "1.0.1"
+    ],
+    "side-channel-map": [
+      "1.0.1"
+    ],
+    "side-channel-weakmap": [
+      "1.0.2"
+    ],
+    "signal-exit": [
+      "3.0.7"
+    ],
+    "sisteransi": [
+      "1.0.5"
+    ],
+    "source-map": [
+      "0.6.1"
+    ],
+    "source-map-support": [
+      "0.5.21"
+    ],
+    "sqlite-vec": [
+      "0.1.9"
+    ],
+    "sqlite-vec-windows-x64": [
+      "0.1.9"
+    ],
+    "standardwebhooks": [
+      "1.0.0"
+    ],
+    "statuses": [
+      "2.0.2"
+    ],
+    "string_decoder": [
+      "1.1.1"
+    ],
+    "string-width": [
+      "4.2.3"
+    ],
+    "strip-ansi": [
+      "6.0.1"
+    ],
+    "strtok3": [
+      "10.3.5"
+    ],
+    "tar": [
+      "7.5.19"
+    ],
+    "toidentifier": [
+      "1.0.1"
+    ],
+    "token-types": [
+      "6.1.2"
+    ],
+    "tr46": [
+      "0.0.3"
+    ],
+    "tree-sitter-bash": [
+      "0.25.1"
+    ],
+    "ts-algebra": [
+      "2.0.0"
+    ],
+    "tslib": [
+      "2.8.1"
+    ],
+    "tslog": [
+      "4.10.2"
+    ],
+    "type-is": [
+      "2.1.0"
+    ],
+    "typebox": [
+      "1.3.3"
+    ],
+    "typescript": [
+      "6.0.3"
+    ],
+    "uhyphen": [
+      "0.2.0"
+    ],
+    "uint8array-extras": [
+      "1.5.0"
+    ],
+    "undici": [
+      "8.5.0"
+    ],
+    "undici-types": [
+      "6.21.0"
+    ],
+    "unpipe": [
+      "1.0.0"
+    ],
+    "util-deprecate": [
+      "1.0.2"
+    ],
+    "vary": [
+      "1.1.2"
+    ],
+    "web-push": [
+      "3.6.7"
+    ],
+    "web-streams-polyfill": [
+      "3.3.3"
+    ],
+    "web-tree-sitter": [
+      "0.26.10"
+    ],
+    "webidl-conversions": [
+      "3.0.1"
+    ],
+    "whatwg-url": [
+      "5.0.0"
+    ],
+    "which": [
+      "2.0.2"
+    ],
+    "which-module": [
+      "2.0.1"
+    ],
+    "wrap-ansi": [
+      "6.2.0",
+      "7.0.0"
+    ],
+    "wrappy": [
+      "1.0.2"
+    ],
+    "ws": [
+      "8.21.0"
+    ],
+    "y18n": [
+      "4.0.3",
+      "5.0.8"
+    ],
+    "yallist": [
+      "5.0.0"
+    ],
+    "yaml": [
+      "2.9.0"
+    ],
+    "yargs": [
+      "15.4.1",
+      "17.7.3"
+    ],
+    "yargs-parser": [
+      "18.1.3",
+      "21.1.1"
+    ],
+    "zod": [
+      "3.25.76",
+      "4.4.3"
+    ],
+    "zod-to-json-schema": [
+      "3.25.2"
+    ]
+  }
+}

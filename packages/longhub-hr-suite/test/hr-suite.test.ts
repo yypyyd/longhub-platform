@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { validatePackManifest } from "@longhub/pack-schema";
+import { validatePackContent, validatePackManifest } from "@longhub/pack-schema";
 import { createMockAdapter } from "@longhub/xiaolongxia-adapter";
 import { createJdDraftSkill } from "../src/agent-skill.js";
 import { buildHrPackSource } from "../src/pack.js";
@@ -103,7 +103,12 @@ describe("套装制品源", () => {
     const source = buildHrPackSource("1.0.0");
     const validated = validatePackManifest(source.manifest);
     expect(validated.ok).toBe(true);
-    expect(source.files["agent.yaml"]).toContain("longhub.skill.resume-screen");
-    expect(source.files["agent.yaml"]).toContain("longhub.skill.jd-draft");
+    const content = validatePackContent(source.manifest, source.files);
+    expect(content.ok).toBe(true);
+    if (content.ok) {
+      expect(content.profile.capabilities[0]?.skillIds).toContain("longhub.skill.resume-screen");
+      expect(content.profile.capabilities[0]?.skillIds).toContain("longhub.skill.jd-draft");
+      expect(content.profile.modelPolicyId).toBe("longhub.model.default");
+    }
   });
 });

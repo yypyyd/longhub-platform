@@ -32,7 +32,8 @@ a { color: var(--accent); text-decoration: none; }
   -webkit-backdrop-filter: saturate(180%) blur(20px);
   border-bottom: 1px solid rgba(0, 0, 0, 0.08);
 }
-.nav .brand { font-weight: 600; font-size: 17px; cursor: pointer; }
+.nav .brand { display: inline-flex; align-items: center; gap: 9px; font-weight: 600; font-size: 17px; cursor: pointer; }
+.nav .brand img { width: 34px; height: 34px; border-radius: 50%; object-fit: cover; }
 .nav button.link {
   background: none; border: none; cursor: pointer;
   font-size: 14px; color: var(--text); opacity: 0.85; padding: 4px 0;

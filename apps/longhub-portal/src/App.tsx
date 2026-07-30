@@ -37,7 +37,8 @@ export function App(): JSX.Element {
     <>
       <nav className="nav">
         <span className="brand" onClick={() => setView("home")}>
-          龙枢 LongHub
+          <img src="/longhub-avatar.png" alt="" />
+          <span>龙枢 LongHub</span>
         </span>
         <button className="link" onClick={() => setView("pricing")}>
           定价
@@ -117,10 +118,18 @@ function Home(props: { goPricing: () => void; goDownload: () => void }): JSX.Ele
 }
 
 interface ClientRelease {
-  version: string;
-  filename: string;
-  size: number;
-  url: string;
+  manifest: {
+    version: string;
+    filename: string;
+    size: number;
+    url_path: string;
+    rollout: {
+      status: "active" | "paused";
+      basis_points: number;
+    };
+  };
+  signature_key_id: string;
+  signature: string;
 }
 
 function Download(): JSX.Element {
@@ -141,15 +150,25 @@ function Download(): JSX.Element {
           <p>
             支持 Windows 10/11（64 位）。安装后使用邮箱账号登录，在「个人中心 → 我的设备」中绑定设备，即可下载已订阅的数字员工套装。
           </p>
-          {release ? (
+          {release?.manifest.rollout.status === "active" &&
+          release.manifest.rollout.basis_points === 10_000 ? (
             <p className="mt">
-              <a className="btn" href={release.url}>
-                下载 Windows 安装包（v{release.version}，{(release.size / 1024 / 1024).toFixed(0)} MB）
+              <a className="btn" href={release.manifest.url_path}>
+                下载 Windows 安装包（v{release.manifest.version}，
+                {(release.manifest.size / 1024 / 1024).toFixed(0)} MB）
               </a>
+            </p>
+          ) : release?.manifest.rollout.status === "active" ? (
+            <p className="mt muted">
+              v{release.manifest.version} 正在分批灰度，符合条件的已安装客户端会自动收到更新。
             </p>
           ) : (
             <p className="mt muted">
-              {release === undefined ? "正在获取最新版本…" : "安装包正在打包上架，暂请联系管理员获取内测版本。"}
+              {release === undefined
+                ? "正在获取最新版本…"
+                : release?.manifest.rollout.status === "paused"
+                  ? `v${release.manifest.version} 暂停发布，当前不会提供下载。`
+                  : "安装包正在打包上架，暂请联系管理员获取内测版本。"}
             </p>
           )}
         </div>

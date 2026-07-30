@@ -5,6 +5,7 @@
  */
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { createConsoleLogger } from "@longhub/observability";
 import {
   createLineChannel,
   isResponse,
@@ -13,6 +14,7 @@ import {
 } from "@longhub/core";
 
 const corePath = fileURLToPath(new URL("./core-process.js", import.meta.url));
+const logger = createConsoleLogger("desktop-prototype");
 const core = spawn(process.execPath, [corePath], { stdio: ["pipe", "pipe", "inherit"] });
 
 let reqSeq = 0;
@@ -26,7 +28,7 @@ const channel = createLineChannel(core.stdout!, core.stdin!, (msg) => {
   } else if ("method" in msg && msg.method === "event.task") {
     const params = msg.params as { type: string; task_id: string };
     events.push(params.type);
-    console.log(`[event] ${params.task_id} ${params.type}`);
+    logger.info("prototype.task_event", { task_id: params.task_id, event_type: params.type });
   }
 });
 
@@ -43,14 +45,14 @@ function call(method: string, params?: Record<string, unknown>): Promise<unknown
 
 async function main(): Promise<void> {
   const hello = (await call("core.hello")) as { coreRpcVersion: string };
-  console.log(`[hello] Core RPC ${hello.coreRpcVersion}`);
+  logger.info("prototype.core_ready", { core_rpc_version: hello.coreRpcVersion });
 
   const task = (await call("task.submit", {
     idempotencyKey: "proto-1",
     skillId: "longhub.skill.echo-upper",
     input: { text: "longhub" },
   })) as { taskId: string };
-  console.log(`[submit] ${task.taskId}`);
+  logger.info("prototype.task_submitted", { task_id: task.taskId });
 
   // 幂等验证：同一幂等键必须返回同一任务
   const dup = (await call("task.submit", {
@@ -68,7 +70,7 @@ async function main(): Promise<void> {
     };
     if (t.status === "succeeded") {
       if (t.output?.text !== "LONGHUB") throw new Error(`输出错误: ${JSON.stringify(t.output)}`);
-      console.log(`[done] output=${t.output.text} events=${events.join(",")}`);
+      logger.info("prototype.task_succeeded", { task_id: task.taskId, event_types: events });
       core.kill();
       process.exit(0);
     }
@@ -81,7 +83,7 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  console.error(err);
+  logger.error("prototype.failed", { error: err });
   core.kill();
   process.exit(1);
 });

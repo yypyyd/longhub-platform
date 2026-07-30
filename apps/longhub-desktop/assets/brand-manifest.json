@@ -1,0 +1,22 @@
+{
+  "schema": "longhub/brand-assets/v1",
+  "status": "temporary",
+  "display_name": "龙枢",
+  "source": "assets/longhub-avatar-source.png (provided by product owner)",
+  "approved_by": null,
+  "approved_at": null,
+  "assets": {
+    "svg": {
+      "path": "assets/longhub-icon.svg",
+      "sha256": "1b07d84cf048f6b1de3ba012262f8dbbcea6586d08d2784e9b6c2df48524d349"
+    },
+    "png": {
+      "path": "assets/longhub-icon.png",
+      "sha256": "362dfdccc0d108565cc381ebb0542a299b77762b1fcc33ad17896536773e5800"
+    },
+    "ico": {
+      "path": "assets/longhub-icon.ico",
+      "sha256": "85a518965bc3065a6d9a1f3bef2402b8dcd31f958f7910aac4041f08d68e76cc"
+    }
+  }
+}

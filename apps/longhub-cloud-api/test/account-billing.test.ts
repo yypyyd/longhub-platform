@@ -5,6 +5,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { hashPassword } from "../src/auth.js";
 import { MemoryStore } from "../src/memory-store.js";
 import { createCloudApiServer } from "../src/server.js";
+import { activateTestDevice } from "./helpers/activate-device.js";
 
 const ADMIN_TOKEN = "test-admin-token";
 
@@ -50,7 +51,9 @@ async function registerDevice(fingerprint: string): Promise<{ device_id: string;
     app_version: "1.0.0",
     device_fingerprint: fingerprint,
   });
-  return json;
+  const device = json as { device_id: string; device_token: string };
+  await activateTestDevice(baseUrl, ADMIN_TOKEN, device.device_token);
+  return device;
 }
 
 describe("Account：注册 / 登录 / 会话", () => {

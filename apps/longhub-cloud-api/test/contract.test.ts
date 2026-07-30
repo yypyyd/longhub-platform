@@ -9,6 +9,7 @@ import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createExecutorServer } from "longhub-executor";
 import { createCloudApiServer } from "../src/server.js";
+import { activateTestDevice } from "./helpers/activate-device.js";
 
 const spec = readFileSync(
   fileURLToPath(new URL("../../../contracts/openapi/longhub-cloud-v1.yaml", import.meta.url)),
@@ -39,6 +40,7 @@ beforeAll(async () => {
     }),
   });
   deviceToken = ((await registered.json()) as { device_token: string }).device_token;
+  await activateTestDevice(baseUrl, "longhub-dev-admin", deviceToken);
 });
 
 afterAll(() => {
@@ -69,9 +71,22 @@ describe("OpenAPI V1 契约文档", () => {
       "/packs/{packId}/download:",
       "/admin/packs:",
       "/admin/packs/{packId}/{version}/revoke:",
+      "/client-releases/latest:",
+      "/client-releases/versions/{version}:",
+      "/client-releases/signing-key:",
+      "/admin/client-releases:",
     ]) {
       expect(spec).toContain(`  ${path}`);
     }
+    expect(spec).toContain("SignedClientUpdateMetadata:");
+    expect(spec).toContain("ClientUpdateManifest:");
+  });
+
+  it("匿名客户端遥测路径与严格契约存在", () => {
+    expect(spec).toContain("  /client/telemetry:");
+    expect(spec).toContain("ClientTelemetryBatch:");
+    expect(spec).toContain("additionalProperties: false");
+    expect(spec).toContain("const: longhub/client-telemetry/v1");
   });
 
   it("声明幂等与断线恢复参数", () => {

@@ -2,6 +2,16 @@ packages:
   - apps/*
   - packages/*
 
-onlyBuiltDependencies:
-  - electron
-  - esbuild
+allowBuilds:
+  '@google/genai': false
+  electron: true
+  esbuild: true
+  openclaw: true
+  protobufjs: false
+  tree-sitter-bash: false
+
+# 固定仍处于供应链观察期的传递依赖到已验证的前一补丁版本。
+overrides:
+  app-builder-lib@25.1.8>minimatch: 10.2.5
+  browserslist@4.28.7>electron-to-chromium: 1.5.396
+  glob@13.0.6>minimatch: 10.2.5

@@ -3,6 +3,7 @@ import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createExecutorServer } from "longhub-executor";
 import { createCloudApiServer } from "../src/server.js";
+import { activateTestDevice } from "./helpers/activate-device.js";
 
 let executor: ReturnType<typeof createExecutorServer>;
 let api: ReturnType<typeof createCloudApiServer>;
@@ -27,6 +28,7 @@ beforeAll(async () => {
     }),
   });
   deviceToken = ((await registered.json()) as { device_token: string }).device_token;
+  await activateTestDevice(baseUrl, "longhub-dev-admin", deviceToken);
 });
 
 afterAll(() => {

@@ -36,19 +36,42 @@ afterAll(() => {
 });
 
 function buildPackFile(version: string): PackFile {
-  const files = { "agent.yaml": "id: hr" };
-  const digest = computePackDigest(files);
+  const profile = {
+    schemaVersion: "longhub/agent-profile/v1",
+    id: "longhub.agent.hr",
+    version: "1.0.0",
+    display: { name: "HR 助理", starterPrompts: [] },
+    workspace: { identity: "workspace/IDENTITY.md" },
+    capabilities: [
+      { id: "longhub.capability.recruitment", skillIds: ["longhub.skill.hr"], permissions: [] },
+    ],
+    openclaw: { skills: [], tools: { allow: [], deny: [] }, sandbox: "strict" },
+    memory: { mode: "isolated" },
+    lifecycle: { defaultSessionTitle: "HR 新会话", entitlementExpiryPolicy: "readonly" },
+    compatibility: {
+      minDesktopVersion: "1.0.0",
+      openclawVersion: "2026.7.1-2",
+      profileMigrationVersion: 1,
+    },
+  };
+  const files = {
+    "agent-profile.json": JSON.stringify(profile),
+    "workspace/IDENTITY.md": "# HR 助理",
+    "agent.yaml": "id: hr",
+  };
   const manifest: PackManifest = {
     schemaVersion: "longhub/v1",
     pack: { id: "longhub.hr-suite", version, minDesktopVersion: "1.0.0" },
-    agentTemplate: { id: "longhub.agent.hr", version: "1.0.0" },
+    agentTemplate: { id: "longhub.agent.hr", version: "1.0.0", profilePath: "agent-profile.json" },
     capabilities: [
       { id: "longhub.capability.recruitment", version: "1.0.0", required: true, permissions: [] },
     ],
     runtime: { sdkVersion: "1.0", executionMode: "hybrid" },
     limits: { maxConcurrentSkills: 3, maxTaskDepth: 3 },
-    integrity: { algorithm: "sha256", digest, signatureKeyId: KEY_ID },
+    integrity: { algorithm: "sha256", digest: "pending", signatureKeyId: KEY_ID },
   };
+  const digest = computePackDigest(manifest, files);
+  manifest.integrity.digest = digest;
   return { manifest, files, signature: signPackDigest(digest, privatePem) };
 }
 
@@ -84,25 +107,13 @@ describe("Desktop 应用服务（Electron 壳的 IPC 后端）", () => {
     expect(events).toContain("task.succeeded");
   }, 20_000);
 
-  it("敏感权限未经确认不提交，确认后放行", async () => {
-    const blocked = await app.submitTask({
+  it("旧 task.submit 不能再由调用方授予权限", async () => {
+    await expect(core.request("task.submit", {
       idempotencyKey: "app-2",
       skillId: "longhub.skill.echo-upper",
       input: { text: "x" },
       grantedPermissions: ["connector:hr-api:write"],
-    });
-    expect(blocked).toEqual({ needsConfirmation: ["connector:hr-api:write"] });
-
-    const confirmed = await app.submitTask({
-      idempotencyKey: "app-2",
-      skillId: "longhub.skill.echo-upper",
-      input: { text: "x" },
-      grantedPermissions: ["connector:hr-api:write"],
-      userConfirmed: true,
-    });
-    expect("taskId" in confirmed).toBe(true);
-    const task = await waitForTerminal((confirmed as { taskId: string }).taskId);
-    expect(task.status).toBe("succeeded");
+    })).rejects.toThrow("禁止字段");
   }, 20_000);
 
   it("从制品文件安装套装并列出", () => {
@@ -122,30 +133,26 @@ describe("Desktop 应用服务（Electron 壳的 IPC 后端）", () => {
     expect(app.rollbackPack("longhub.hr-suite")).toMatchObject({ ok: true, version: "1.0.0" });
   });
 
-  it("HR 本地技能：简历初筛闭环", async () => {
+  it("旧 task.submit 对需要企业权限的技能安全失败", async () => {
     const result = await app.submitTask({
       idempotencyKey: "app-hr-1",
       skillId: "longhub.skill.resume-screen",
       input: { requiredKeywords: ["typescript"], resumeText: "精通 TypeScript" },
-      grantedPermissions: ["connector:hr-api:read"],
     });
     expect("taskId" in result).toBe(true);
     const task = await waitForTerminal((result as { taskId: string }).taskId);
-    expect(task.status).toBe("succeeded");
-    expect(task.output).toMatchObject({ score: 100, recommendation: "pass" });
+    expect(task.status).toBe("failed");
   }, 20_000);
 
-  it("HR 底座技能：JD 起草经适配层（Mock 底座）闭环", async () => {
+  it("HR 底座技能不能绕过 Bridge 由旧任务入口执行", async () => {
     const result = await app.submitTask({
       idempotencyKey: "app-hr-2",
       skillId: "longhub.skill.jd-draft",
       input: { position: "招聘专员", mustHaves: ["沟通能力"] },
-      grantedPermissions: ["connector:hr-api:read"],
     });
     expect("taskId" in result).toBe(true);
     const task = await waitForTerminal((result as { taskId: string }).taskId);
-    expect(task.status).toBe("succeeded");
-    expect((task.output as { jd: string }).jd).toContain("招聘专员");
+    expect(task.status).toBe("failed");
   }, 20_000);
 
   it("损坏的制品文件返回错误而不是抛异常", () => {

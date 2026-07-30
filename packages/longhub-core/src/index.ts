@@ -20,4 +20,5 @@ export const HARD_LIMITS = {
 } as const;
 
 export * from "./rpc.js";
+export * from "./authorization.js";
 export * from "./runtime.js";

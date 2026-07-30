@@ -10,7 +10,19 @@ import {
   type RpcChannel,
   type RpcMessage,
   type TaskEvent,
+  type BridgeConfirmationRequest,
 } from "@longhub/core";
+
+export class CoreRequestError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+    readonly retryable: boolean,
+  ) {
+    super(message);
+    this.name = "CoreRequestError";
+  }
+}
 
 export interface CoreClientOptions {
   /** core-process.js 绝对路径 */
@@ -29,6 +41,7 @@ export class CoreClient {
     { resolve: (value: unknown) => void; reject: (err: Error) => void }
   >();
   private readonly eventListeners = new Set<(event: TaskEvent) => void>();
+  private readonly confirmationListeners = new Set<(request: BridgeConfirmationRequest) => void>();
 
   constructor(private readonly options: CoreClientOptions) {}
 
@@ -48,11 +61,14 @@ export class CoreClient {
         const pending = this.pending.get(msg.id);
         if (!pending) return;
         this.pending.delete(msg.id);
-        if (msg.error) pending.reject(new Error(msg.error.message));
+        if (msg.error) pending.reject(new CoreRequestError(msg.error.code, msg.error.message, msg.error.retryable));
         else pending.resolve(msg.result);
       } else if ("method" in msg && msg.method === "event.task") {
         const event = msg.params as unknown as TaskEvent;
         for (const listener of this.eventListeners) listener(event);
+      } else if ("method" in msg && msg.method === "event.confirm.request") {
+        const request = msg.params as unknown as BridgeConfirmationRequest;
+        for (const listener of this.confirmationListeners) listener(request);
       }
     });
   }
@@ -69,6 +85,11 @@ export class CoreClient {
   onTaskEvent(listener: (event: TaskEvent) => void): () => void {
     this.eventListeners.add(listener);
     return () => this.eventListeners.delete(listener);
+  }
+
+  onConfirmationRequest(listener: (request: BridgeConfirmationRequest) => void): () => void {
+    this.confirmationListeners.add(listener);
+    return () => this.confirmationListeners.delete(listener);
   }
 
   stop(): void {

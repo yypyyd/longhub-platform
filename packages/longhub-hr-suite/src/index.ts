@@ -14,4 +14,10 @@ export {
   type JdDraftInput,
   type JdDraftOutput,
 } from "./agent-skill.js";
-export { buildHrPackSource, HR_PACK_ID, type HrPackSource } from "./pack.js";
+export {
+  buildHrAgentProfile,
+  buildHrPackSource,
+  HR_PACK_ID,
+  HR_PROFILE_PATH,
+  type HrPackSource,
+} from "./pack.js";

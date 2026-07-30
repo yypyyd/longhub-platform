@@ -28,13 +28,10 @@ export interface SubmitTaskParams {
   idempotencyKey: string;
   skillId: string;
   input: unknown;
-  grantedPermissions?: string[];
-  userConfirmed?: boolean;
+  budget?: { maxTokens: number; maxCostCents: number; maxDurationMs: number };
 }
 
-export type SubmitTaskResult =
-  | { needsConfirmation: string[] }
-  | { taskId: string; status: string };
+export type SubmitTaskResult = { taskId: string; status: string };
 
 export type DeviceInfo =
   | { ok: true; deviceId: string; baseUrl: string }

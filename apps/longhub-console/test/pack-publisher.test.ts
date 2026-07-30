@@ -13,11 +13,29 @@ import { PackPublisher, type PackSource } from "../src/pack-publisher.js";
 const ADMIN_TOKEN = "console-admin";
 
 function buildPackSource(version: string): PackSource {
+  const profile = {
+    schemaVersion: "longhub/agent-profile/v1",
+    id: "longhub.agent.hr",
+    version: "1.0.0",
+    display: { name: "HR 助理", starterPrompts: [] },
+    workspace: { identity: "workspace/IDENTITY.md" },
+    capabilities: [
+      { id: "longhub.capability.recruitment", skillIds: ["longhub.skill.hr"], permissions: [] },
+    ],
+    openclaw: { skills: [], tools: { allow: [], deny: [] }, sandbox: "strict" },
+    memory: { mode: "isolated" },
+    lifecycle: { defaultSessionTitle: "HR 新会话", entitlementExpiryPolicy: "readonly" },
+    compatibility: {
+      minDesktopVersion: "1.0.0",
+      openclawVersion: "2026.7.1-2",
+      profileMigrationVersion: 1,
+    },
+  };
   return {
     manifest: {
       schemaVersion: "longhub/v1",
       pack: { id: "longhub.hr-suite", version, minDesktopVersion: "1.0.0" },
-      agentTemplate: { id: "longhub.agent.hr", version: "1.0.0" },
+      agentTemplate: { id: "longhub.agent.hr", version: "1.0.0", profilePath: "agent-profile.json" },
       capabilities: [
         { id: "longhub.capability.recruitment", version: "1.0.0", required: true, permissions: [] },
       ],
@@ -25,7 +43,11 @@ function buildPackSource(version: string): PackSource {
       limits: { maxConcurrentSkills: 3, maxTaskDepth: 3 },
       integrity: { algorithm: "sha256", digest: "placeholder", signatureKeyId: "placeholder" },
     },
-    files: { "agent.yaml": "id: hr" },
+    files: {
+      "agent-profile.json": JSON.stringify(profile),
+      "workspace/IDENTITY.md": "# HR 助理",
+      "agent.yaml": "id: hr",
+    },
   };
 }
 

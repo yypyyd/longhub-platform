@@ -27,24 +27,49 @@ const privatePem = privateKey.export({ type: "pkcs8", format: "pem" }).toString(
 const KEY_ID = "longhub-cloud-2026";
 const DEVICE_TOKEN = "dt-stub-token";
 
-function buildSignedPack(version: string, files: Record<string, string>): PackFile {
-  const digest = computePackDigest(files);
+function buildSignedPack(version: string, inputFiles: Record<string, string>): PackFile {
+  const profile = {
+    schemaVersion: "longhub/agent-profile/v1",
+    id: "longhub.agent.hr",
+    version: "1.0.0",
+    display: { name: "HR 助理", starterPrompts: [] },
+    workspace: { identity: "workspace/IDENTITY.md" },
+    capabilities: [
+      { id: "longhub.capability.recruitment", skillIds: ["longhub.skill.hr"], permissions: [] },
+    ],
+    openclaw: { skills: [], tools: { allow: [], deny: [] }, sandbox: "strict" },
+    memory: { mode: "isolated" },
+    lifecycle: { defaultSessionTitle: "HR 新会话", entitlementExpiryPolicy: "readonly" },
+    compatibility: {
+      minDesktopVersion: "1.0.0",
+      openclawVersion: "2026.7.1-2",
+      profileMigrationVersion: 1,
+    },
+  };
+  const files = {
+    "agent-profile.json": JSON.stringify(profile),
+    "workspace/IDENTITY.md": "# HR 助理",
+    ...inputFiles,
+  };
   const manifest: PackManifest = {
     schemaVersion: "longhub/v1",
     pack: { id: "longhub.hr-suite", version, minDesktopVersion: "1.0.0" },
-    agentTemplate: { id: "longhub.agent.hr", version: "1.0.0" },
+    agentTemplate: { id: "longhub.agent.hr", version: "1.0.0", profilePath: "agent-profile.json" },
     capabilities: [
       { id: "longhub.capability.recruitment", version: "1.0.0", required: true, permissions: [] },
     ],
     runtime: { sdkVersion: "1.0", executionMode: "hybrid" },
     limits: { maxConcurrentSkills: 3, maxTaskDepth: 3 },
-    integrity: { algorithm: "sha256", digest, signatureKeyId: KEY_ID },
+    integrity: { algorithm: "sha256", digest: "pending", signatureKeyId: KEY_ID },
   };
+  const digest = computePackDigest(manifest, files);
+  manifest.integrity.digest = digest;
   return { manifest, files, signature: signPackDigest(digest, privatePem) };
 }
 
 const signedPack = buildSignedPack("1.2.0", { "agent.yaml": "id: hr" });
 let entitled = true;
+let activated = false;
 
 /** 云台契约桩：register / signing-key / download */
 function createStubCloud(): Server {
@@ -60,6 +85,24 @@ function createStubCloud(): Server {
     }
     if (req.method === "GET" && url.pathname === "/v1/packs/signing-key") {
       json(200, { key_id: KEY_ID, public_key_pem: publicPem });
+      return;
+    }
+    if (req.method === "GET" && url.pathname === "/v1/devices/activation") {
+      json(200, { activated, ...(activated ? { expires_at: "2099-01-01T00:00:00.000Z" } : { reason: "ACTIVATION_REQUIRED" }) });
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/v1/devices/activate") {
+      let raw = "";
+      req.on("data", (chunk) => { raw += String(chunk); });
+      req.on("end", () => {
+        const body = JSON.parse(raw) as { code?: string };
+        if (body.code !== "LH-ABCD-1234-EF56-7890") {
+          json(403, { code: "ACTIVATION_CODE_INVALID", message: "授权码无效" });
+          return;
+        }
+        activated = true;
+        json(200, { activated: true });
+      });
       return;
     }
     if (req.method === "GET" && url.pathname === "/v1/packs/longhub.hr-suite/download") {
@@ -115,6 +158,15 @@ describe("CloudPackClient", () => {
   it("获取签名公钥", async () => {
     const key = await new CloudPackClient(baseUrl).fetchSigningKey();
     expect(key).toEqual({ keyId: KEY_ID, publicKeyPem: publicPem });
+  });
+
+  it("查询并核销首次授权码", async () => {
+    activated = false;
+    const client = new CloudPackClient(baseUrl);
+    expect(await client.getActivationStatus(DEVICE_TOKEN)).toMatchObject({ activated: false, reason: "ACTIVATION_REQUIRED" });
+    await expect(client.activateDevice(DEVICE_TOKEN, "bad-code")).rejects.toThrow("授权码无效");
+    expect(await client.activateDevice(DEVICE_TOKEN, "LH-ABCD-1234-EF56-7890")).toEqual({ activated: true });
+    expect(await client.getActivationStatus(DEVICE_TOKEN)).toMatchObject({ activated: true });
   });
 });
 

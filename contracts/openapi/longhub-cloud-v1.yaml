@@ -18,14 +18,250 @@ tags:
     description: 制品、摘要、签名与下载许可
   - name: task
     description: 云端任务、状态、幂等与事件
+  - name: model
+    description: 客户端固定模型配置与 OpenAI 兼容代理
+  - name: telemetry
+    description: 严格匿名、仅聚合的客户端运行指标
+  - name: knowledge
+    description: 租户隔离知识文档与引用检索
+  - name: governance
+    description: 第三方 Pack 安全审核、批准与发布
 security:
   - bearerAuth: []
 paths:
+  /client/runtime-config:
+    get:
+      tags: [model]
+      summary: 获取设备的固定 OpenClaw 模型运行配置
+      operationId: getClientRuntimeConfig
+      responses:
+        "200":
+          description: 固定模型配置（不包含上游模型 ID/API Key）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClientRuntimeConfig"
+        default:
+          $ref: "#/components/responses/Error"
+  /model/models:
+    get:
+      tags: [model]
+      summary: OpenAI 兼容模型列表；始终只返回 longhub-default
+      operationId: listClientModels
+      responses:
+        "200":
+          description: 固定模型列表
+        default:
+          $ref: "#/components/responses/Error"
+  /model/chat/completions:
+    post:
+      tags: [model]
+      summary: 设备鉴权的 Chat Completions 代理；服务端强制覆盖真实模型 ID
+      operationId: proxyChatCompletions
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "200": { description: 上游 OpenAI 兼容响应或 SSE 流 }
+        default:
+          $ref: "#/components/responses/Error"
+  /model/responses:
+    post:
+      tags: [model]
+      summary: 设备鉴权的 Responses API 代理；服务端强制覆盖真实模型 ID
+      operationId: proxyResponses
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "200": { description: 上游 OpenAI 兼容响应或 SSE 流 }
+        default:
+          $ref: "#/components/responses/Error"
+  /admin/model-config:
+    get:
+      tags: [model]
+      summary: 管理面读取默认模型配置（API Key 只返回是否已配置）
+      operationId: getAdminModelConfig
+      responses:
+        "200": { description: 模型配置脱敏视图 }
+        default:
+          $ref: "#/components/responses/Error"
+    post:
+      tags: [model]
+      summary: 管理面更新默认模型配置；API Key 加密入库
+      operationId: updateAdminModelConfig
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminModelConfigInput"
+      responses:
+        "200": { description: 已保存的脱敏配置 }
+        default:
+          $ref: "#/components/responses/Error"
+  /admin/model-policies:
+    get:
+      tags: [model]
+      summary: 列出 global/tenant/plan/device 模型与产品运行策略
+      operationId: listAdminModelPolicies
+      responses:
+        "200": { description: 不含上游密钥的策略列表 }
+        default: { $ref: "#/components/responses/Error" }
+  /admin/model-usage:
+    get:
+      tags: [model]
+      summary: 查询设备与租户的日/月模型计量聚合
+      operationId: listAdminModelUsage
+      responses:
+        "200": { description: 模型 Token、成本和结果聚合 }
+        default: { $ref: "#/components/responses/Error" }
+  /admin/devices:
+    get:
+      tags: [identity]
+      summary: 列出设备运营状态；不返回设备凭据或指纹
+      operationId: listAdminDevices
+      responses:
+        "200": { description: 设备列表、最后在线/模型成功、错误摘要与策略字段 }
+        default: { $ref: "#/components/responses/Error" }
+  /admin/devices/{deviceId}:
+    post:
+      tags: [identity]
+      summary: 停用或恢复设备，并设置最低客户端版本和灰度分组
+      operationId: updateAdminDevicePolicy
+      parameters:
+        - { name: deviceId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                status: { type: string, enum: [active, revoked] }
+                min_required_version: { type: [string, "null"] }
+                rollout_group: { type: [string, "null"] }
+      responses:
+        "200": { description: 已更新的脱敏设备记录 }
+        default: { $ref: "#/components/responses/Error" }
+  /admin/devices/{deviceId}/rotate-credential:
+    post:
+      tags: [identity]
+      summary: 轮换设备凭据；新凭据只在本次响应返回，旧凭据立即失效
+      operationId: rotateAdminDeviceCredential
+      parameters:
+        - { name: deviceId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: 一次性新设备凭据 }
+        default: { $ref: "#/components/responses/Error" }
+  /admin/knowledge-documents:
+    get:
+      tags: [knowledge]
+      summary: 按租户列出知识文档元数据；不返回正文
+      operationId: listKnowledgeDocuments
+      parameters:
+        - { name: tenant_id, in: query, required: false, schema: { type: string, default: tenant-default } }
+      responses:
+        "200": { description: 知识文档元数据列表 }
+        default: { $ref: "#/components/responses/Error" }
+    post:
+      tags: [knowledge]
+      summary: 写入租户知识文档；生产环境使用独立知识数据密钥加密正文
+      operationId: createKnowledgeDocument
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [tenant_id, title, source_label, content]
+              properties:
+                tenant_id: { type: string, maxLength: 128 }
+                title: { type: string, maxLength: 200 }
+                source_label: { type: string, maxLength: 200 }
+                content: { type: string, minLength: 1, maxLength: 1048576 }
+      responses:
+        "201": { description: 已创建的文档元数据 }
+        default: { $ref: "#/components/responses/Error" }
+  /admin/knowledge-documents/{documentId}:
+    delete:
+      tags: [knowledge]
+      summary: 删除知识文档
+      operationId: deleteKnowledgeDocument
+      parameters:
+        - { name: documentId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: 删除成功 }
+        default: { $ref: "#/components/responses/Error" }
+  /knowledge/query:
+    post:
+      tags: [knowledge]
+      summary: 设备在自身租户内检索知识引用片段
+      operationId: queryTenantKnowledge
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [query]
+              properties:
+                query: { type: string, minLength: 2, maxLength: 500 }
+                limit: { type: integer, minimum: 1, maximum: 10, default: 5 }
+      responses:
+        "200": { description: 标题、来源和确定性引用片段 }
+        default: { $ref: "#/components/responses/Error" }
+  /admin/pack-reviews:
+    get:
+      tags: [governance]
+      summary: 列出第三方 Pack 审核记录；不返回完整 Pack 正文
+      operationId: listPackReviews
+      responses:
+        "200": { description: 审核记录与固定扫描发现 }
+        default: { $ref: "#/components/responses/Error" }
+    post:
+      tags: [governance]
+      summary: 提交第三方 Pack，执行 Manifest/Profile 联合校验和固定危险模式扫描
+      operationId: submitPackReview
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [publisher, pack]
+              properties:
+                publisher: { type: string, minLength: 1, maxLength: 128 }
+                pack: { type: object }
+      responses:
+        "201": { description: 扫描通过并进入待批准状态 }
+        "422": { description: 扫描拒绝；响应返回固定 findings }
+        default: { $ref: "#/components/responses/Error" }
+  /admin/pack-reviews/{reviewId}/approve:
+    post:
+      tags: [governance]
+      summary: 人工批准后重新校验、平台签名并发布不可覆盖版本
+      operationId: approvePackReview
+      parameters:
+        - { name: reviewId, in: path, required: true, schema: { type: string } }
+      responses:
+        "201": { description: 已签名发布 }
+        "409": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
   /devices/register:
     post:
       tags: [identity]
-      summary: 注册设备并颁发设备凭据
+      summary: 匿名登记设备并颁发待激活设备凭据；注册不代表获得产品使用权
       operationId: registerDevice
+      security: []
       requestBody:
         required: true
         content:
@@ -41,6 +277,105 @@ paths:
                 $ref: "#/components/schemas/Device"
         "4XX":
           $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /devices/activation:
+    get:
+      tags: [identity]
+      summary: 查询当前设备是否已使用有效授权码激活
+      operationId: getDeviceActivation
+      responses:
+        "200":
+          description: 激活状态
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeviceActivationStatus"
+        default:
+          $ref: "#/components/responses/Error"
+  /devices/activate:
+    post:
+      tags: [identity]
+      summary: 核销授权码并绑定当前设备
+      operationId: activateDevice
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string, pattern: '^LH-(?:[A-Fa-f0-9]{4}-){3}[A-Fa-f0-9]{4}$' }
+      responses:
+        "200": { description: 激活成功 }
+        "403": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+        default:
+          $ref: "#/components/responses/Error"
+  /client/telemetry:
+    post:
+      tags: [telemetry]
+      summary: 接收已激活客户端的严格匿名运行指标并立即聚合
+      description: Bearer 仅用于鉴权和限流；请求体禁止身份、聊天、路径、URL、异常或自由文本，服务端不保存逐设备原始事件。
+      operationId: submitClientTelemetry
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ClientTelemetryBatch"
+      responses:
+        "202":
+          description: 批次已聚合
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [accepted]
+                properties:
+                  accepted: { type: integer, minimum: 1, maximum: 32 }
+        "413": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+        default:
+          $ref: "#/components/responses/Error"
+  /admin/activation-codes:
+    get:
+      tags: [identity]
+      summary: 管理面列出授权码脱敏记录
+      operationId: listActivationCodes
+      responses:
+        "200": { description: 不含明文与摘要的授权码列表 }
+        default:
+          $ref: "#/components/responses/Error"
+    post:
+      tags: [identity]
+      summary: 管理面生成授权码；明文只在本次响应返回
+      operationId: createActivationCode
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateActivationCodeRequest"
+      responses:
+        "201": { description: 授权码已生成 }
+        default:
+          $ref: "#/components/responses/Error"
+  /admin/activation-codes/{activationCodeId}/revoke:
+    post:
+      tags: [identity]
+      summary: 管理面撤销授权码，并立即阻断绑定设备的产品 API
+      operationId: revokeActivationCode
+      parameters:
+        - name: activationCodeId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: 授权码已撤销 }
         default:
           $ref: "#/components/responses/Error"
   /catalog/packs:
@@ -174,6 +509,190 @@ paths:
               schema:
                 $ref: "#/components/schemas/ReleaseCheckResponse"
         "4XX":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /client-releases/latest:
+    get:
+      tags: [release, artifact]
+      summary: 获取最新的严格签名 Windows 客户端更新元数据
+      description: 返回值仅供使用安装包内预置信任公钥的客户端验签；不得通过 signing-key 接口自举信任。
+      operationId: getLatestClientRelease
+      security: []
+      parameters:
+        - name: channel
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [stable, beta]
+            default: stable
+      responses:
+        "200":
+          description: 最新已签名版本；当前渠道没有可用版本时 release 为 null
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [release]
+                properties:
+                  release:
+                    oneOf:
+                      - $ref: "#/components/schemas/SignedClientUpdateMetadata"
+                      - type: "null"
+        default:
+          $ref: "#/components/responses/Error"
+  /client-releases/signing-key:
+    get:
+      tags: [artifact]
+      summary: 获取当前客户端更新签名公钥，仅供运维核对与轮换发现
+      description: Desktop 不得信任本响应建立根信任；正式信任公钥必须在构建时预置。
+      operationId: getClientUpdateSigningKey
+      security: []
+      responses:
+        "200":
+          description: 当前客户端更新签名公钥
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClientUpdateSigningKey"
+        default:
+          $ref: "#/components/responses/Error"
+  /client-releases/versions/{version}:
+    get:
+      tags: [release, artifact]
+      summary: 获取指定 Windows 客户端版本的严格签名元数据
+      description: 仅供已安装客户端在升级前准备回滚安装器；不执行灰度判断，也不改变“最新版本”语义。
+      operationId: getClientReleaseVersion
+      security: []
+      parameters:
+        - name: version
+          in: path
+          required: true
+          schema: { type: string, pattern: '^(0|[1-9]\d{0,8})\.(0|[1-9]\d{0,8})\.(0|[1-9]\d{0,8})$' }
+        - name: channel
+          in: query
+          required: false
+          schema: { type: string, enum: [stable, beta], default: stable }
+      responses:
+        "200":
+          description: 指定渠道与版本的签名元数据
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [release]
+                properties:
+                  release:
+                    $ref: "#/components/schemas/SignedClientUpdateMetadata"
+        "404":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /admin/client-releases:
+    get:
+      tags: [release, artifact]
+      summary: 管理面列出已签名客户端安装包
+      operationId: listAdminClientReleases
+      responses:
+        "200":
+          description: 已签名客户端发布列表及上传审计字段
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [releases]
+                properties:
+                  releases:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AdminClientRelease"
+        default:
+          $ref: "#/components/responses/Error"
+    post:
+      tags: [release, artifact]
+      summary: 管理面流式上传并签署不可覆盖的 Windows 安装包
+      operationId: publishClientRelease
+      parameters:
+        - name: version
+          in: query
+          required: true
+          schema: { type: string, pattern: '^(0|[1-9]\d{0,8})\.(0|[1-9]\d{0,8})\.(0|[1-9]\d{0,8})$' }
+        - name: filename
+          in: query
+          required: true
+          description: 必须精确等于 LongHub-Setup-{version}.exe
+          schema: { type: string, pattern: '^LongHub-Setup-\d+\.\d+\.\d+\.exe$' }
+        - name: channel
+          in: query
+          required: false
+          schema: { type: string, enum: [stable, beta], default: stable }
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+              maxLength: 1073741824
+      responses:
+        "201":
+          description: 已计算大小与 SHA-256、分配单调序列并签署元数据
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [release]
+                properties:
+                  release:
+                    $ref: "#/components/schemas/AdminClientRelease"
+        "409":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /admin/client-releases/{version}/rollout:
+    patch:
+      tags: [release, artifact]
+      summary: 调整当前渠道最新客户端版本的签名灰度或暂停策略
+      description: 每次变更保留固定 cohort seed、分配更高全局 sequence，并重新签署完整 manifest。
+      operationId: updateClientReleaseRollout
+      parameters:
+        - name: version
+          in: path
+          required: true
+          schema: { type: string, pattern: '^(0|[1-9]\d{0,8})\.(0|[1-9]\d{0,8})\.(0|[1-9]\d{0,8})$' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [status, basis_points]
+              properties:
+                status: { type: string, enum: [active, paused] }
+                basis_points:
+                  type: integer
+                  minimum: 0
+                  maximum: 10000
+                  description: active 时必须大于 0；10000 表示 100%。
+      responses:
+        "200":
+          description: 已分配更高 sequence 并重新签名的发布记录
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [release]
+                properties:
+                  release:
+                    $ref: "#/components/schemas/AdminClientRelease"
+        "409":
           $ref: "#/components/responses/Error"
         default:
           $ref: "#/components/responses/Error"
@@ -421,6 +940,146 @@ components:
           schema:
             $ref: "#/components/schemas/ApiError"
   schemas:
+    ClientUpdateManifest:
+      type: object
+      additionalProperties: false
+      description: longhub/client-update/v2 签名载荷；字段顺序无关，按共享 canonical JSON 实现签名。
+      required: [schema_version, sequence, version, channel, platform, arch, filename, size, sha256, url_path, published_at, rollback_data_strategy, rollout]
+      properties:
+        schema_version: { type: string, const: longhub/client-update/v2 }
+        sequence: { type: integer, minimum: 1, maximum: 9007199254740991 }
+        version: { type: string, pattern: '^(0|[1-9]\d{0,8})\.(0|[1-9]\d{0,8})\.(0|[1-9]\d{0,8})$' }
+        channel: { type: string, enum: [stable, beta] }
+        platform: { type: string, const: win32 }
+        arch: { type: string, const: x64 }
+        filename: { type: string, pattern: '^LongHub-Setup-\d+\.\d+\.\d+\.exe$' }
+        size: { type: integer, minimum: 1, maximum: 1073741824 }
+        sha256: { type: string, pattern: '^[a-f0-9]{64}$' }
+        url_path:
+          type: string
+          pattern: '^/downloads/LongHub-Setup-\d+\.\d+\.\d+\.exe$'
+        published_at: { type: string, format: date-time }
+        rollback_data_strategy:
+          type: string
+          enum: [snapshot_required, backward_compatible]
+          description: snapshot_required 表示程序降级前必须恢复安装前状态；backward_compatible 仅可在迁移兼容性已证明时使用。
+        rollout:
+          $ref: "#/components/schemas/ClientUpdateRollout"
+    ClientUpdateRollout:
+      type: object
+      additionalProperties: false
+      description: 签名保护的暂停与确定性灰度策略；同一版本调整比例时 seed 保持不变。
+      required: [status, basis_points, seed, updated_at]
+      properties:
+        status: { type: string, enum: [active, paused] }
+        basis_points: { type: integer, minimum: 0, maximum: 10000 }
+        seed: { type: string, pattern: '^[a-f0-9]{64}$' }
+        updated_at: { type: string, format: date-time }
+    SignedClientUpdateMetadata:
+      type: object
+      additionalProperties: false
+      description: Ed25519 签名覆盖用途域 longhub-client-update-v2、换行符及完整 canonical manifest；不覆盖任何响应外层字段。
+      required: [manifest, signature_key_id, signature]
+      properties:
+        manifest:
+          $ref: "#/components/schemas/ClientUpdateManifest"
+        signature_key_id: { type: string, pattern: '^[a-zA-Z0-9._-]{1,128}$' }
+        signature: { type: string, minLength: 1 }
+    ClientUpdateSigningKey:
+      type: object
+      additionalProperties: false
+      required: [purpose, key_id, public_key_pem]
+      properties:
+        purpose: { type: string, const: longhub-client-update-v2 }
+        key_id: { type: string, pattern: '^[a-zA-Z0-9._-]{1,128}$' }
+        public_key_pem: { type: string }
+    AdminClientRelease:
+      type: object
+      additionalProperties: false
+      required: [manifest, signature_key_id, signature, uploaded_by, uploaded_at, rollout_updated_by, rollout_updated_at, url]
+      properties:
+        manifest:
+          $ref: "#/components/schemas/ClientUpdateManifest"
+        signature_key_id: { type: string, pattern: '^[a-zA-Z0-9._-]{1,128}$' }
+        signature: { type: string, minLength: 1 }
+        uploaded_by: { type: string }
+        uploaded_at: { type: string, format: date-time }
+        rollout_updated_by: { type: string }
+        rollout_updated_at: { type: string, format: date-time }
+        url:
+          type: string
+          pattern: '^/downloads/LongHub-Setup-\d+\.\d+\.\d+\.exe$'
+    ClientRuntimeConfig:
+      type: object
+      additionalProperties: false
+      required: [schema_version, config_version, issued_at, expires_at, provider_id, base_path, model_id, display_name, api_type, context_window, max_tokens, allow_user_model_selection, compatible_desktop, product, features]
+      properties:
+        schema_version: { type: string, const: longhub/runtime-config/v1 }
+        config_version: { type: string, minLength: 1, maxLength: 128 }
+        issued_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+        provider_id: { type: string, const: longhub }
+        base_path: { type: string, const: /v1/model }
+        model_id: { type: string, const: longhub-default }
+        display_name: { type: string, minLength: 1, maxLength: 128 }
+        api_type: { type: string, enum: [openai-completions, openai-responses] }
+        context_window: { type: integer, minimum: 1024, maximum: 10000000 }
+        max_tokens: { type: integer, minimum: 256, maximum: 1000000 }
+        allow_user_model_selection: { type: boolean, const: false }
+        compatible_desktop:
+          type: object
+          additionalProperties: false
+          required: [min_version]
+          properties:
+            min_version: { type: string }
+            max_version: { type: string }
+        product:
+          type: object
+          additionalProperties: false
+          required: [assistant_name, assistant_avatar_path, welcome_message, quick_tasks]
+          properties:
+            assistant_name: { type: string, maxLength: 64 }
+            assistant_avatar_path: { type: string, pattern: '^/assets/' }
+            welcome_message: { type: string, maxLength: 500 }
+            quick_tasks: { type: array, maxItems: 8, items: { type: string, maxLength: 120 } }
+        features:
+          type: object
+          additionalProperties: false
+          required: [agent_catalog, file_upload, tool_execution]
+          properties:
+            agent_catalog: { type: boolean }
+            file_upload: { type: boolean }
+            tool_execution: { type: boolean }
+    AdminModelConfigInput:
+      type: object
+      properties:
+        config_id: { type: string, pattern: '^[A-Za-z0-9._-]{1,128}$' }
+        scope_type: { type: string, enum: [global, tenant, plan, device] }
+        scope_id: { type: string, pattern: '^[A-Za-z0-9._-]{1,128}$' }
+        enabled: { type: boolean }
+        emergency_disabled: { type: boolean }
+        base_url: { type: string, format: uri }
+        model_id: { type: string }
+        display_name: { type: string }
+        api_type: { type: string, enum: [openai-completions, openai-responses] }
+        context_window: { type: integer, minimum: 1024 }
+        max_tokens: { type: integer, minimum: 256 }
+        api_key:
+          type: string
+          writeOnly: true
+        fallback_config_id: { type: [string, 'null'] }
+        request_timeout_ms: { type: integer, minimum: 1000, maximum: 300000 }
+        max_retries: { type: integer, minimum: 0, maximum: 2 }
+        min_desktop_version: { type: string }
+        max_desktop_version: { type: [string, 'null'] }
+        assistant_name: { type: string, maxLength: 64 }
+        assistant_avatar_path: { type: string, pattern: '^/assets/' }
+        welcome_message: { type: string, maxLength: 500 }
+        quick_tasks: { type: array, maxItems: 8, items: { type: string, maxLength: 120 } }
+        device_requests_per_minute: { type: integer, minimum: 1 }
+        device_daily_tokens: { type: integer, minimum: 1000 }
+        tenant_monthly_tokens: { type: integer, minimum: 1000 }
+        max_device_concurrency: { type: integer, minimum: 1 }
     ApiError:
       type: object
       required: [code, message, request_id, retryable]
@@ -464,6 +1123,158 @@ components:
         device_token:
           type: string
           description: 设备凭据，仅注册响应下发；客户端保存后作为 Bearer 凭据访问受保护接口
+        activation_code_id:
+          type: string
+          readOnly: true
+        activated_at:
+          type: string
+          format: date-time
+          readOnly: true
+    DeviceActivationStatus:
+      type: object
+      required: [device_id, activated]
+      properties:
+        device_id: { type: string, description: 当前 Bearer 凭据所属设备；用于旧客户端安全迁移本地凭据 }
+        activated: { type: boolean }
+        reason:
+          type: string
+          enum: [ACTIVATION_REQUIRED, ACTIVATION_REVOKED, ACTIVATION_EXPIRED]
+        expires_at: { type: string, format: date-time }
+        code_hint: { type: string, description: 授权码最后四位，不返回明文 }
+    ClientTelemetryBatch:
+      type: object
+      additionalProperties: false
+      required: [schema_version, events]
+      properties:
+        schema_version: { type: string, const: longhub/client-telemetry/v1 }
+        events:
+          type: array
+          minItems: 1
+          maxItems: 32
+          items:
+            $ref: "#/components/schemas/ClientTelemetryEvent"
+    ClientTelemetryEvent:
+      oneOf:
+        - $ref: "#/components/schemas/ClientStartedTelemetryEvent"
+        - $ref: "#/components/schemas/GatewayStateTelemetryEvent"
+        - $ref: "#/components/schemas/ClientUpdateTelemetryEvent"
+        - $ref: "#/components/schemas/ProductErrorTelemetryEvent"
+        - $ref: "#/components/schemas/PreviousExitTelemetryEvent"
+    ClientTelemetryCommon:
+      type: object
+      properties:
+        occurred_at: { type: string, format: date-time, description: 服务端只接受前后十五分钟窗口 }
+        desktop_version: { type: string, maxLength: 64 }
+        openclaw_version: { type: string, maxLength: 64 }
+        platform: { type: string, enum: [win32] }
+        architecture: { type: string, enum: [x64, arm64] }
+    ClientStartedTelemetryEvent:
+      allOf:
+        - $ref: "#/components/schemas/ClientTelemetryCommon"
+        - type: object
+          additionalProperties: false
+          required: [event_type, occurred_at, desktop_version, openclaw_version, platform, architecture, fields]
+          properties:
+            event_type: { type: string, const: client_started }
+            occurred_at: { type: string, format: date-time }
+            desktop_version: { type: string, maxLength: 64 }
+            openclaw_version: { type: string, maxLength: 64 }
+            platform: { type: string, enum: [win32] }
+            architecture: { type: string, enum: [x64, arm64] }
+            fields:
+              type: object
+              additionalProperties: false
+              required: [startup_duration, active_agent_count]
+              properties:
+                startup_duration: { type: string, enum: [lt_2s, 2_to_5s, 5_to_15s, 15_to_60s, gte_60s] }
+                active_agent_count: { type: string, enum: ['0', '1', 2_to_5, gte_6] }
+    GatewayStateTelemetryEvent:
+      allOf:
+        - $ref: "#/components/schemas/ClientTelemetryCommon"
+        - type: object
+          additionalProperties: false
+          required: [event_type, occurred_at, desktop_version, openclaw_version, platform, architecture, fields]
+          properties:
+            event_type: { type: string, const: gateway_state }
+            occurred_at: { type: string, format: date-time }
+            desktop_version: { type: string, maxLength: 64 }
+            openclaw_version: { type: string, maxLength: 64 }
+            platform: { type: string, enum: [win32] }
+            architecture: { type: string, enum: [x64, arm64] }
+            fields:
+              type: object
+              additionalProperties: false
+              required: [state]
+              properties:
+                state: { type: string, enum: [starting, running, restarting, config_error, failed, stopped] }
+    ClientUpdateTelemetryEvent:
+      allOf:
+        - $ref: "#/components/schemas/ClientTelemetryCommon"
+        - type: object
+          additionalProperties: false
+          required: [event_type, occurred_at, desktop_version, openclaw_version, platform, architecture, fields]
+          properties:
+            event_type: { type: string, const: client_update_result }
+            occurred_at: { type: string, format: date-time }
+            desktop_version: { type: string, maxLength: 64 }
+            openclaw_version: { type: string, maxLength: 64 }
+            platform: { type: string, enum: [win32] }
+            architecture: { type: string, enum: [x64, arm64] }
+            fields:
+              type: object
+              additionalProperties: false
+              required: [result]
+              properties:
+                result: { type: string, enum: [busy, none, declined, downloaded, withdrawn, install_launched, failed, healthy, rollback_launched, rollback_completed] }
+    ProductErrorTelemetryEvent:
+      allOf:
+        - $ref: "#/components/schemas/ClientTelemetryCommon"
+        - type: object
+          additionalProperties: false
+          required: [event_type, occurred_at, desktop_version, openclaw_version, platform, architecture, fields]
+          properties:
+            event_type: { type: string, const: product_error }
+            occurred_at: { type: string, format: date-time }
+            desktop_version: { type: string, maxLength: 64 }
+            openclaw_version: { type: string, maxLength: 64 }
+            platform: { type: string, enum: [win32] }
+            architecture: { type: string, enum: [x64, arm64] }
+            fields:
+              type: object
+              additionalProperties: false
+              required: [code]
+              properties:
+                code: { type: string, enum: [LH-GW-001, LH-CL-001, LH-AU-001, LH-AU-002, LH-MD-001, LH-UP-001, LH-UP-002, LH-GW-002, LH-GW-003, LH-GW-004, LH-ST-001, LH-ST-002, LH-UI-001] }
+    PreviousExitTelemetryEvent:
+      allOf:
+        - $ref: "#/components/schemas/ClientTelemetryCommon"
+        - type: object
+          additionalProperties: false
+          required: [event_type, occurred_at, desktop_version, openclaw_version, platform, architecture, fields]
+          properties:
+            event_type: { type: string, const: previous_exit }
+            occurred_at: { type: string, format: date-time }
+            desktop_version: { type: string, maxLength: 64 }
+            openclaw_version: { type: string, maxLength: 64 }
+            platform: { type: string, enum: [win32] }
+            architecture: { type: string, enum: [x64, arm64] }
+            fields:
+              type: object
+              additionalProperties: false
+              required: [result]
+              properties:
+                result: { type: string, enum: [clean, unclean] }
+    CreateActivationCodeRequest:
+      type: object
+      properties:
+        tenant_id: { type: string, default: tenant-default }
+        label: { type: string, maxLength: 200 }
+        max_uses: { type: integer, minimum: 1, maximum: 10000, default: 1 }
+        expires_in_days: { type: integer, minimum: 1, maximum: 3650, default: 365 }
+        pack_ids:
+          type: array
+          maxItems: 32
+          items: { type: string }
     PackSummary:
       type: object
       required: [pack_id, name, latest_version, min_desktop_version]

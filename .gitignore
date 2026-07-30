@@ -7,4 +7,5 @@ dist/
 coverage/
 release/
 release-*/
+.release-stage/
 node-runtime/

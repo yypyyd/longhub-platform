@@ -11,6 +11,7 @@ const valid = {
   agentTemplate: {
     id: "longhub.agent.hr",
     version: "1.2.0",
+    profilePath: "agent-profile.json",
   },
   capabilities: [
     {

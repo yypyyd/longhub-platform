@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; script-src 'self'; img-src 'self';" />
+    <title>激活龙枢</title>
+    <link rel="stylesheet" href="./activation.css" />
+  </head>
+  <body>
+    <main class="card">
+      <img class="logo" src="./longhub-avatar.png" alt="龙枢" />
+      <h1>激活龙枢</h1>
+      <p class="lead">首次使用请输入我们提供的授权码。激活成功后，以后打开会直接进入龙枢助手。</p>
+      <form id="activation-form">
+        <label for="activation-code">授权码</label>
+        <input id="activation-code" name="activation-code" autocomplete="off" maxlength="64"
+          placeholder="LH-XXXX-XXXX-XXXX-XXXX" spellcheck="false" required />
+        <button id="submit" type="submit">立即激活</button>
+      </form>
+      <p id="message" class="message" role="status" aria-live="polite"></p>
+      <p id="device" class="device"></p>
+    </main>
+    <script src="./activation.js"></script>
+  </body>
+</html>

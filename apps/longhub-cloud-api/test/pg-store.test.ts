@@ -7,6 +7,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { PackFile, PackManifest } from "@longhub/pack-schema";
 import { PgStore } from "../src/pg-store.js";
+import type { ModelGatewayConfigRecord } from "../src/store.js";
 
 const databaseUrl = process.env.LONGHUB_TEST_DATABASE_URL;
 
@@ -93,7 +94,7 @@ describe.skipIf(!databaseUrl)("PgStore 持久化", () => {
     const manifest: PackManifest = {
       schemaVersion: "longhub/v1",
       pack: { id: "longhub.hr-suite", version, minDesktopVersion: "1.0.0" },
-      agentTemplate: { id: "longhub.agent.hr", version: "1.0.0" },
+      agentTemplate: { id: "longhub.agent.hr", version: "1.0.0", profilePath: "agent-profile.json" },
       capabilities: [
         { id: "longhub.capability.recruitment", version: "1.0.0", required: true, permissions: [] },
       ],
@@ -115,5 +116,75 @@ describe.skipIf(!databaseUrl)("PgStore 持久化", () => {
 
     const revoked = await store.revokeRelease("longhub.hr-suite", version);
     expect(revoked?.status).toBe("revoked");
+  });
+
+  it("模型策略：PostgreSQL BIGINT 字段回读为 number，可继续部分更新", async () => {
+    const now = new Date().toISOString();
+    const config: ModelGatewayConfigRecord = {
+      config_id: `pg-model-${Date.now()}`, scope_type: "global", scope_id: "-", enabled: true,
+      emergency_disabled: false, base_url: "https://model.example/v1", model_id: "real-model",
+      display_name: "默认模型", api_type: "openai-completions", context_window: 128_000, max_tokens: 8_192,
+      encrypted_api_key: "encrypted", request_timeout_ms: 300_000, max_retries: 0,
+      circuit_breaker_threshold: 5, circuit_breaker_cooldown_ms: 60_000, min_desktop_version: "0.0.0",
+      assistant_name: "龙枢助手", assistant_avatar_path: "/assets/longhub-avatar.png", welcome_message: "你好",
+      quick_tasks: [], features: { agent_catalog: true, file_upload: true, tool_execution: true },
+      device_requests_per_minute: 60, device_daily_tokens: 1_000_000, tenant_monthly_tokens: 100_000_000,
+      max_device_concurrency: 100, input_cost_microunits_per_million: 10,
+      output_cost_microunits_per_million: 20, cache_cost_microunits_per_million: 5, updated_at: now,
+    };
+    await store.setModelGatewayConfig(config);
+    const loaded = await store.getModelGatewayConfig(config.config_id);
+    expect(loaded).toMatchObject({
+      device_daily_tokens: 1_000_000, tenant_monthly_tokens: 100_000_000,
+      input_cost_microunits_per_million: 10, output_cost_microunits_per_million: 20,
+      cache_cost_microunits_per_million: 5,
+    });
+    for (const value of [
+      loaded?.device_daily_tokens, loaded?.tenant_monthly_tokens,
+      loaded?.input_cost_microunits_per_million, loaded?.output_cost_microunits_per_million,
+      loaded?.cache_cost_microunits_per_million,
+    ]) expect(typeof value).toBe("number");
+  });
+
+  it("匿名遥测：同维度只累加小时聚合且没有身份字段", async () => {
+    const bucket = new Date().toISOString().slice(0, 13) + ":00:00.000Z";
+    const record = {
+      bucket_start: bucket,
+      event_type: "gateway_state" as const,
+      desktop_version: "0.4.0",
+      openclaw_version: "2026.7.1-2",
+      platform: "win32" as const,
+      architecture: "x64" as const,
+      value: "running",
+      agent_count_bucket: "-",
+      count: 1,
+    };
+    await store.incrementClientTelemetry([record, record]);
+    const row = (await store.listClientTelemetry()).find((candidate) =>
+      candidate.bucket_start === bucket && candidate.event_type === "gateway_state" &&
+      candidate.desktop_version === "0.4.0" && candidate.value === "running"
+    );
+    expect(row?.count).toBeGreaterThanOrEqual(2);
+    expect(JSON.stringify(row)).not.toContain("device_");
+
+    const exitRecord = { ...record, event_type: "previous_exit" as const, value: "unclean" };
+    await store.incrementClientTelemetry([exitRecord]);
+    expect((await store.listClientTelemetry()).some((candidate) =>
+      candidate.bucket_start === bucket && candidate.event_type === "previous_exit" && candidate.value === "unclean"
+    )).toBe(true);
+
+    const modelRecord = {
+      bucket_start: bucket,
+      api_type: "openai-completions" as const,
+      outcome: "success" as const,
+      latency_bucket: "lt_1s" as const,
+      count: 1,
+    };
+    await store.incrementModelRequestMetrics([modelRecord, modelRecord]);
+    const modelRow = (await store.listModelRequestMetrics()).find((candidate) =>
+      candidate.bucket_start === bucket && candidate.api_type === "openai-completions" && candidate.outcome === "success"
+    );
+    expect(modelRow?.count).toBeGreaterThanOrEqual(2);
+    expect(JSON.stringify(modelRow)).not.toMatch(/device|tenant|request|response|url/i);
   });
 });

@@ -11,14 +11,38 @@ import {
   type PackManifest,
 } from "@longhub/pack-schema";
 import { createCloudApiServer } from "../src/server.js";
+import { activateTestDevice } from "./helpers/activate-device.js";
 
 const ADMIN_TOKEN = "test-admin";
 
-function buildUnsignedPack(version: string, files: Record<string, string>) {
+function buildUnsignedPack(version: string, inputFiles: Record<string, string>) {
+  const profile = {
+    schemaVersion: "longhub/agent-profile/v1",
+    id: "longhub.agent.hr",
+    version: "1.0.0",
+    display: { name: "HR 助理", starterPrompts: [] },
+    workspace: { identity: "workspace/IDENTITY.md" },
+    capabilities: [
+      { id: "longhub.capability.recruitment", skillIds: ["longhub.skill.hr"], permissions: [] },
+    ],
+    openclaw: { skills: [], tools: { allow: [], deny: [] }, sandbox: "strict" },
+    memory: { mode: "isolated" },
+    lifecycle: { defaultSessionTitle: "HR 新会话", entitlementExpiryPolicy: "readonly" },
+    compatibility: {
+      minDesktopVersion: "1.0.0",
+      openclawVersion: "2026.7.1-2",
+      profileMigrationVersion: 1,
+    },
+  };
+  const files = {
+    "agent-profile.json": JSON.stringify(profile),
+    "workspace/IDENTITY.md": "# HR 助理",
+    ...inputFiles,
+  };
   const manifest: PackManifest = {
     schemaVersion: "longhub/v1",
     pack: { id: "longhub.hr-suite", version, minDesktopVersion: "1.0.0" },
-    agentTemplate: { id: "longhub.agent.hr", version: "1.0.0" },
+    agentTemplate: { id: "longhub.agent.hr", version: "1.0.0", profilePath: "agent-profile.json" },
     capabilities: [
       { id: "longhub.capability.recruitment", version: "1.0.0", required: true, permissions: [] },
     ],
@@ -46,6 +70,7 @@ beforeAll(async () => {
   });
   const device = (await registered.json()) as { device_id: string; device_token: string };
   deviceToken = device.device_token;
+  await activateTestDevice(baseUrl, ADMIN_TOKEN, deviceToken);
   deviceId = device.device_id;
 });
 
@@ -116,7 +141,7 @@ describe("Pack 分发闭环：上传→签名→授权下载→吊销", () => {
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as { pack: PackFile; digest: string; signature_key_id: string };
-    expect(computePackDigest(body.pack.files)).toBe(body.digest);
+    expect(computePackDigest(body.pack.manifest, body.pack.files)).toBe(body.digest);
     expect(body.pack.manifest.integrity.digest).toBe(body.digest);
 
     const keyRes = await fetch(`${baseUrl}/v1/packs/signing-key`);

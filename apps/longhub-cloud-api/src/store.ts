@@ -40,8 +40,36 @@ export interface DeviceRecord {
   device_token: string;
   /** 绑定的用户账号；未绑定为 undefined */
   user_id?: string;
+  /** 首次核销成功后绑定的授权码；设备注册本身不代表获得产品使用权 */
+  activation_code_id?: string;
+  activated_at?: string;
+  last_seen_at?: string;
+  last_model_success_at?: string;
+  last_error_code?: string;
+  credential_rotated_at?: string;
+  min_required_version?: string;
+  rollout_group?: string;
   created_at: string;
 }
+
+export interface ActivationCodeRecord {
+  activation_code_id: string;
+  tenant_id: string;
+  /** 只保存规范化授权码的 SHA-256；明文仅在创建响应中返回一次 */
+  code_hash: string;
+  code_hint: string;
+  label?: string;
+  status: "active" | "revoked";
+  max_uses: number;
+  use_count: number;
+  pack_ids: string[];
+  expires_at: string;
+  created_at: string;
+}
+
+export type ActivationRedemptionResult =
+  | { ok: true; code: ActivationCodeRecord; device: DeviceRecord; alreadyActivated: boolean }
+  | { ok: false; reason: "DEVICE_NOT_FOUND" | "CODE_UNAVAILABLE" };
 
 // ===== 账号 / 管理员 / 计费（P0 商业化） =====
 
@@ -129,6 +157,7 @@ export interface EntitlementRecord {
   scope: "tenant" | "user" | "device";
   status: "active" | "suspended" | "revoked";
   expires_at: string;
+  source_activation_code_id?: string;
   created_at: string;
 }
 
@@ -142,6 +171,105 @@ export interface PackReleaseRecord {
   signature_key_id: string;
   min_desktop_version: string;
   created_at: string;
+}
+
+/** 服务端模型网关配置。上游 API Key 只以密文形式持久化。 */
+export interface ModelGatewayConfigRecord {
+  config_id: string;
+  scope_type: "global" | "tenant" | "plan" | "device";
+  scope_id: string;
+  enabled: boolean;
+  emergency_disabled: boolean;
+  base_url: string;
+  model_id: string;
+  display_name: string;
+  api_type: "openai-completions" | "openai-responses";
+  context_window: number;
+  max_tokens: number;
+  encrypted_api_key?: string;
+  fallback_config_id?: string;
+  request_timeout_ms: number;
+  max_retries: number;
+  circuit_breaker_threshold: number;
+  circuit_breaker_cooldown_ms: number;
+  min_desktop_version: string;
+  max_desktop_version?: string;
+  assistant_name: string;
+  assistant_avatar_path: string;
+  welcome_message: string;
+  quick_tasks: string[];
+  features: {
+    agent_catalog: boolean;
+    file_upload: boolean;
+    tool_execution: boolean;
+  };
+  device_requests_per_minute: number;
+  device_daily_tokens: number;
+  tenant_monthly_tokens: number;
+  max_device_concurrency: number;
+  input_cost_microunits_per_million: number;
+  output_cost_microunits_per_million: number;
+  cache_cost_microunits_per_million: number;
+  updated_at: string;
+}
+
+export interface ModelUsageAggregateRecord {
+  period_start: string;
+  period: "day" | "month";
+  tenant_id: string;
+  device_id: string;
+  config_id: string;
+  request_count: number;
+  success_count: number;
+  error_count: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_tokens: number;
+  estimated_tokens: number;
+  cost_microunits: number;
+}
+
+export interface KnowledgeDocumentRecord {
+  document_id: string;
+  tenant_id: string;
+  title: string;
+  source_label: string;
+  content: string;
+  created_at: string;
+}
+
+export interface PackReviewRecord {
+  review_id: string;
+  publisher: string;
+  pack: PackFile;
+  status: "submitted" | "rejected" | "approved" | "published";
+  findings: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+/**
+ * 匿名客户端遥测的小时级聚合行。这里没有设备、用户、租户或会话字段，调用方也
+ * 不能传任意维度；value 只来自共享遥测契约中的固定枚举。
+ */
+export interface ClientTelemetryAggregateRecord {
+  bucket_start: string;
+  event_type: "client_started" | "gateway_state" | "client_update_result" | "product_error" | "previous_exit";
+  desktop_version: string;
+  openclaw_version: string;
+  platform: "win32";
+  architecture: "x64" | "arm64";
+  value: string;
+  agent_count_bucket: string;
+  count: number;
+}
+
+export interface ModelRequestAggregateRecord {
+  bucket_start: string;
+  api_type: "openai-completions" | "openai-responses";
+  outcome: "success" | "upstream_rejected" | "network_error" | "timeout";
+  latency_bucket: "lt_1s" | "1_to_3s" | "3_to_10s" | "10_to_30s" | "gte_30s";
+  count: number;
 }
 
 export const TASK_EVENT_TYPE: Record<CloudTaskStatus, string> = {
@@ -175,6 +303,26 @@ export interface CloudStore {
   findDeviceByToken(token: string): Promise<DeviceRecord | undefined>;
   listDevices(userId?: string): Promise<DeviceRecord[]>;
   bindDevice(deviceId: string, userId: string): Promise<DeviceRecord | undefined>;
+  updateDeviceOperations(deviceId: string, patch: Partial<Pick<DeviceRecord, "status" | "last_seen_at" | "last_model_success_at" | "last_error_code" | "credential_rotated_at" | "min_required_version" | "rollout_group" | "device_token">>): Promise<DeviceRecord | undefined>;
+
+  // Activation：授权码只保存摘要，核销必须原子消耗次数并绑定设备
+  createActivationCode(params: {
+    tenant_id: string;
+    code_hash: string;
+    code_hint: string;
+    label?: string;
+    max_uses: number;
+    pack_ids: string[];
+    expires_at: string;
+  }): Promise<ActivationCodeRecord>;
+  getActivationCode(activationCodeId: string): Promise<ActivationCodeRecord | undefined>;
+  listActivationCodes(): Promise<ActivationCodeRecord[]>;
+  revokeActivationCode(activationCodeId: string): Promise<ActivationCodeRecord | undefined>;
+  redeemActivationCode(params: {
+    device_id: string;
+    code_hash: string;
+    now: string;
+  }): Promise<ActivationRedemptionResult>;
 
   // Account：用户账号与会话
   createUser(params: { email: string; password_hash: string }): Promise<{ user: UserRecord; existed: boolean }>;
@@ -252,6 +400,26 @@ export interface CloudStore {
   getRelease(packId: string, version: string): Promise<PackReleaseRecord | undefined>;
   listReleases(packId?: string): Promise<PackReleaseRecord[]>;
   revokeRelease(packId: string, version: string): Promise<PackReleaseRecord | undefined>;
+
+  // Model Gateway：global/tenant/plan/device 分层策略；设备优先级最高
+  getModelGatewayConfig(configId?: string): Promise<ModelGatewayConfigRecord | undefined>;
+  listModelGatewayConfigs(): Promise<ModelGatewayConfigRecord[]>;
+  setModelGatewayConfig(config: ModelGatewayConfigRecord): Promise<ModelGatewayConfigRecord>;
+
+  // Telemetry：仅保存严格枚举的小时级匿名聚合，不保存逐设备原始事件
+  incrementClientTelemetry(records: readonly ClientTelemetryAggregateRecord[]): Promise<void>;
+  listClientTelemetry(): Promise<ClientTelemetryAggregateRecord[]>;
+  incrementModelRequestMetrics(records: readonly ModelRequestAggregateRecord[]): Promise<void>;
+  listModelRequestMetrics(): Promise<ModelRequestAggregateRecord[]>;
+  incrementModelUsage(records: readonly ModelUsageAggregateRecord[]): Promise<void>;
+  listModelUsage(): Promise<ModelUsageAggregateRecord[]>;
+  createKnowledgeDocument(params: Omit<KnowledgeDocumentRecord, "document_id" | "created_at">): Promise<KnowledgeDocumentRecord>;
+  listKnowledgeDocuments(tenantId: string): Promise<KnowledgeDocumentRecord[]>;
+  deleteKnowledgeDocument(documentId: string): Promise<KnowledgeDocumentRecord | undefined>;
+  createPackReview(params: { publisher: string; pack: PackFile; findings: string[] }): Promise<PackReviewRecord>;
+  getPackReview(reviewId: string): Promise<PackReviewRecord | undefined>;
+  listPackReviews(): Promise<PackReviewRecord[]>;
+  updatePackReview(reviewId: string, patch: Pick<PackReviewRecord, "status" | "findings">): Promise<PackReviewRecord | undefined>;
 
   close(): Promise<void>;
 }

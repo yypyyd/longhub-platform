@@ -16,6 +16,7 @@ import { CoreClient } from "../src/core-client.js";
 import { DesktopApp } from "../src/desktop-app.js";
 import { CloudPackClient } from "../src/pack-distribution.js";
 import { PackInstaller } from "../src/pack-installer.js";
+import { activateCloudDevice } from "./helpers/activate-cloud-device.js";
 
 const ADMIN_TOKEN = "e2e-admin";
 const workDir = mkdtempSync(join(tmpdir(), "lh-e2e-"));
@@ -65,6 +66,7 @@ describe("发布→授权→安装→执行 全链路", () => {
     const cred = await client.registerDevice({ appVersion: "1.0.0", deviceFingerprint: "e2e-fp" });
     deviceId = cred.deviceId;
     deviceToken = cred.deviceToken;
+    await activateCloudDevice(baseUrl, ADMIN_TOKEN, deviceToken);
 
     const denied = await client.downloadPack(deviceToken, HR_PACK_ID);
     expect(denied).toMatchObject({ ok: false, code: "NOT_ENTITLED" });
@@ -85,17 +87,14 @@ describe("发布→授权→安装→执行 全链路", () => {
     ]);
   });
 
-  it("安装后本地执行 HR 技能闭环", async () => {
+  it("安装后旧任务入口没有 Core grant 时不能执行 HR 技能", async () => {
     app.start();
     const submitted = await app.submitTask({
       idempotencyKey: "e2e-hr-1",
       skillId: "longhub.skill.resume-screen",
       input: { requiredKeywords: ["TypeScript", "招聘"], resumeText: "五年 typescript 招聘经验" },
-      grantedPermissions: ["connector:hr-api:read"],
     });
-    expect("taskId" in submitted).toBe(true);
-    const task = await waitForTerminal((submitted as { taskId: string }).taskId);
-    expect(task.status).toBe("succeeded");
-    expect(task.output).toMatchObject({ score: 100, recommendation: "pass" });
+    const task = await waitForTerminal(submitted.taskId);
+    expect(task.status).toBe("failed");
   }, 20_000);
 });

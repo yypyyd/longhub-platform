@@ -13,8 +13,89 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { StructuredLogger } from "@longhub/observability";
 import { newToken, sessionExpiry, verifyPassword } from "./auth.js";
+import { generateActivationCode, publicActivationCode } from "./activation-code.js";
 import { bearerToken, readJson, sendError, sendJson } from "./http-util.js";
-import type { AdminRole, CloudStore } from "./store.js";
+import type {
+  AdminRole,
+  ClientTelemetryAggregateRecord,
+  CloudStore,
+  ModelRequestAggregateRecord,
+} from "./store.js";
+
+export interface OperationalMetrics {
+  window_hours: 24;
+  client_starts: number;
+  previous_exit_clean: number;
+  previous_exit_unclean: number;
+  crash_rate: number | null;
+  model_requests: number;
+  model_successes: number;
+  model_success_rate: number | null;
+  model_latency_buckets: Record<ModelRequestAggregateRecord["latency_bucket"], number>;
+  update_healthy: number;
+  update_failed: number;
+  update_rollback: number;
+  update_success_rate: number | null;
+  product_errors: number;
+  top_product_errors: Array<{ code: string; count: number }>;
+  desktop_versions: Array<{ version: string; count: number }>;
+}
+
+export function buildOperationalMetrics(
+  clientRows: readonly ClientTelemetryAggregateRecord[],
+  modelRows: readonly ModelRequestAggregateRecord[],
+  now = new Date(),
+): OperationalMetrics {
+  const cutoff = now.getTime() - 24 * 60 * 60_000;
+  const clients = clientRows.filter((row) => Date.parse(row.bucket_start) >= cutoff && Date.parse(row.bucket_start) <= now.getTime());
+  const models = modelRows.filter((row) => Date.parse(row.bucket_start) >= cutoff && Date.parse(row.bucket_start) <= now.getTime());
+  const sumClient = (type: ClientTelemetryAggregateRecord["event_type"], value?: string): number =>
+    clients.filter((row) => row.event_type === type && (value === undefined || row.value === value))
+      .reduce((total, row) => total + row.count, 0);
+  const clean = sumClient("previous_exit", "clean");
+  const unclean = sumClient("previous_exit", "unclean");
+  const modelRequests = models.reduce((total, row) => total + row.count, 0);
+  const modelSuccesses = models.filter((row) => row.outcome === "success").reduce((total, row) => total + row.count, 0);
+  const updateHealthy = sumClient("client_update_result", "healthy");
+  const updateFailed = sumClient("client_update_result", "failed");
+  const updateRollback = sumClient("client_update_result", "rollback_completed");
+  const latencyBuckets: OperationalMetrics["model_latency_buckets"] = {
+    lt_1s: 0,
+    "1_to_3s": 0,
+    "3_to_10s": 0,
+    "10_to_30s": 0,
+    gte_30s: 0,
+  };
+  for (const row of models) latencyBuckets[row.latency_bucket] += row.count;
+  const errorCounts = new Map<string, number>();
+  const versionCounts = new Map<string, number>();
+  for (const row of clients) {
+    if (row.event_type === "product_error") errorCounts.set(row.value, (errorCounts.get(row.value) ?? 0) + row.count);
+    if (row.event_type === "client_started") versionCounts.set(row.desktop_version, (versionCounts.get(row.desktop_version) ?? 0) + row.count);
+  }
+  const sortedCounts = (values: Map<string, number>, label: "code" | "version") =>
+    [...values].map(([key, count]) => ({ [label]: key, count })).sort((a, b) => b.count - a.count || String(a[label]).localeCompare(String(b[label])));
+  const previousTotal = clean + unclean;
+  const updateTotal = updateHealthy + updateFailed + updateRollback;
+  return {
+    window_hours: 24,
+    client_starts: sumClient("client_started"),
+    previous_exit_clean: clean,
+    previous_exit_unclean: unclean,
+    crash_rate: previousTotal > 0 ? unclean / previousTotal : null,
+    model_requests: modelRequests,
+    model_successes: modelSuccesses,
+    model_success_rate: modelRequests > 0 ? modelSuccesses / modelRequests : null,
+    model_latency_buckets: latencyBuckets,
+    update_healthy: updateHealthy,
+    update_failed: updateFailed,
+    update_rollback: updateRollback,
+    update_success_rate: updateTotal > 0 ? updateHealthy / updateTotal : null,
+    product_errors: [...errorCounts.values()].reduce((total, count) => total + count, 0),
+    top_product_errors: sortedCounts(errorCounts, "code").slice(0, 5) as Array<{ code: string; count: number }>,
+    desktop_versions: sortedCounts(versionCounts, "version") as Array<{ version: string; count: number }>,
+  };
+}
 
 export interface AdminRouteContext {
   store: CloudStore;
@@ -39,7 +120,7 @@ export async function requireAdmin(
     sendError(res, 401, "UNAUTHORIZED", "缺少或无效的管理凭据");
     return undefined;
   }
-  if (token === ctx.adminToken) return { actor: "static-admin-token", role: "super" };
+  if (token === ctx.adminToken) return { actor: "static-admin", role: "super" };
   const session = await ctx.store.getSession(token);
   const admin = session?.subject_type === "admin" ? await ctx.store.getAdmin(session.subject_id) : undefined;
   if (!admin || admin.status !== "active") {
@@ -128,9 +209,132 @@ export async function handleAdminRoutes(
       app_version: d.app_version,
       display_name: d.display_name,
       user_id: d.user_id,
+      activation_code_id: d.activation_code_id,
+      activated_at: d.activated_at,
+      last_seen_at: d.last_seen_at,
+      last_model_success_at: d.last_model_success_at,
+      last_error_code: d.last_error_code,
+      credential_rotated_at: d.credential_rotated_at,
+      min_required_version: d.min_required_version,
+      rollout_group: d.rollout_group,
       created_at: d.created_at,
     }));
     sendJson(res, 200, { devices });
+    return true;
+  }
+
+  if (req.method === "POST" && parts.length === 4 && parts[2] === "devices") {
+    const identity = await requireAdmin(ctx, req, res, { write: true });
+    if (!identity) return true;
+    const parsed = await readJson<{ status?: "active" | "revoked"; min_required_version?: string | null; rollout_group?: string | null }>(req, res);
+    if (!parsed) return true;
+    const minVersion = parsed.min_required_version === null ? undefined : parsed.min_required_version;
+    const group = parsed.rollout_group === null ? undefined : parsed.rollout_group;
+    if ((parsed.status && !["active", "revoked"].includes(parsed.status)) ||
+      (minVersion && !/^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/.test(minVersion)) ||
+      (group && !/^[A-Za-z0-9._-]{1,64}$/.test(group))) {
+      sendError(res, 422, "INVALID_DEVICE_POLICY", "设备状态、最低版本或灰度分组无效");
+      return true;
+    }
+    const updated = await ctx.store.updateDeviceOperations(parts[3]!, {
+      ...(parsed.status ? { status: parsed.status } : {}),
+      ...(Object.hasOwn(parsed, "min_required_version") ? { min_required_version: minVersion } : {}),
+      ...(Object.hasOwn(parsed, "rollout_group") ? { rollout_group: group } : {}),
+    });
+    if (!updated) {
+      sendError(res, 404, "DEVICE_NOT_FOUND", "设备不存在");
+      return true;
+    }
+    await ctx.store.appendAudit(identity.actor, "device.policy.update", { device_id: updated.device_id, status: updated.status, min_required_version: updated.min_required_version, rollout_group: updated.rollout_group });
+    sendJson(res, 200, { device: { ...updated, device_token: undefined, device_fingerprint: undefined } });
+    return true;
+  }
+
+  if (req.method === "POST" && parts.length === 5 && parts[2] === "devices" && parts[4] === "rotate-credential") {
+    const identity = await requireAdmin(ctx, req, res, { write: true });
+    if (!identity) return true;
+    const token = newToken("dt");
+    const updated = await ctx.store.updateDeviceOperations(parts[3]!, { device_token: token, credential_rotated_at: new Date().toISOString() });
+    if (!updated) {
+      sendError(res, 404, "DEVICE_NOT_FOUND", "设备不存在");
+      return true;
+    }
+    await ctx.store.appendAudit(identity.actor, "device.credential.rotate", { device_id: updated.device_id });
+    sendJson(res, 200, { device_id: updated.device_id, device_token: token, credential_rotated_at: updated.credential_rotated_at });
+    return true;
+  }
+
+  // GET/POST /v1/admin/activation-codes（明文只在创建响应返回一次）
+  if (url.pathname === "/v1/admin/activation-codes" && req.method === "GET") {
+    if (!(await requireAdmin(ctx, req, res, { write: false }))) return true;
+    sendJson(res, 200, {
+      activation_codes: (await ctx.store.listActivationCodes()).map(publicActivationCode),
+    });
+    return true;
+  }
+  if (url.pathname === "/v1/admin/activation-codes" && req.method === "POST") {
+    const identity = await requireAdmin(ctx, req, res, { write: true });
+    if (!identity) return true;
+    const parsed = await readJson<{
+      tenant_id?: string;
+      label?: string;
+      max_uses?: number;
+      expires_in_days?: number;
+      pack_ids?: string[];
+    }>(req, res);
+    if (!parsed) return true;
+    const tenantId = parsed.tenant_id?.trim() || "tenant-default";
+    const label = parsed.label?.trim();
+    const maxUses = parsed.max_uses ?? 1;
+    const expiresInDays = parsed.expires_in_days ?? 365;
+    const packIds = parsed.pack_ids ?? [];
+    if (
+      !/^[a-zA-Z0-9._-]{1,128}$/.test(tenantId) ||
+      (label !== undefined && label.length > 200) ||
+      !Number.isInteger(maxUses) || maxUses < 1 || maxUses > 10_000 ||
+      !Number.isInteger(expiresInDays) || expiresInDays < 1 || expiresInDays > 3_650 ||
+      !Array.isArray(packIds) || packIds.length > 32 ||
+      packIds.some((packId) => typeof packId !== "string" || !/^[a-zA-Z0-9._-]{1,128}$/.test(packId))
+    ) {
+      sendError(res, 422, "INVALID_ACTIVATION_CODE", "授权码参数无效");
+      return true;
+    }
+    const generated = generateActivationCode();
+    const expiresAt = new Date(Date.now() + expiresInDays * 86_400_000).toISOString();
+    const record = await ctx.store.createActivationCode({
+      tenant_id: tenantId,
+      code_hash: generated.codeHash,
+      code_hint: generated.codeHint,
+      label,
+      max_uses: maxUses,
+      pack_ids: [...new Set(packIds)],
+      expires_at: expiresAt,
+    });
+    await ctx.store.appendAudit(identity.actor, "activation-code.create", {
+      activation_code_id: record.activation_code_id,
+      max_uses: record.max_uses,
+      pack_ids: record.pack_ids,
+      expires_at: record.expires_at,
+    });
+    sendJson(res, 201, { activation_code: publicActivationCode(record), code: generated.code });
+    return true;
+  }
+
+  // POST /v1/admin/activation-codes/{id}/revoke
+  if (
+    req.method === "POST" && parts.length === 5 && parts[2] === "activation-codes" && parts[4] === "revoke"
+  ) {
+    const identity = await requireAdmin(ctx, req, res, { write: true });
+    if (!identity) return true;
+    const record = await ctx.store.revokeActivationCode(parts[3]!);
+    if (!record) {
+      sendError(res, 404, "ACTIVATION_CODE_NOT_FOUND", "授权码不存在");
+      return true;
+    }
+    await ctx.store.appendAudit(identity.actor, "activation-code.revoke", {
+      activation_code_id: record.activation_code_id,
+    });
+    sendJson(res, 200, { activation_code: publicActivationCode(record) });
     return true;
   }
 
@@ -310,14 +514,23 @@ export async function handleAdminRoutes(
     return true;
   }
 
+  if (req.method === "GET" && url.pathname === "/v1/admin/model-usage") {
+    if (!(await requireAdmin(ctx, req, res, { write: false }))) return true;
+    sendJson(res, 200, { usage: await ctx.store.listModelUsage() });
+    return true;
+  }
+
   // GET /v1/admin/metrics（看板汇总）
   if (req.method === "GET" && url.pathname === "/v1/admin/metrics") {
     if (!(await requireAdmin(ctx, req, res, { write: false }))) return true;
-    const [users, devices, orders, releases] = await Promise.all([
+    const [users, devices, orders, releases, clientTelemetry, modelMetrics, modelUsage] = await Promise.all([
       ctx.store.listUsers(),
       ctx.store.listDevices(),
       ctx.store.listOrders(),
       ctx.store.listReleases(),
+      ctx.store.listClientTelemetry(),
+      ctx.store.listModelRequestMetrics(),
+      ctx.store.listModelUsage(),
     ]);
     const paid = orders.filter((o) => o.status === "paid");
     sendJson(res, 200, {
@@ -326,6 +539,15 @@ export async function handleAdminRoutes(
       orders_paid_total: paid.length,
       revenue_fen: paid.reduce((sum, o) => sum + o.amount_fen, 0),
       releases_total: releases.length,
+      operations: buildOperationalMetrics(clientTelemetry, modelMetrics),
+      model_usage: modelUsage.filter((row) => row.period === "month").reduce((summary, row) => ({
+        requests: summary.requests + row.request_count,
+        input_tokens: summary.input_tokens + row.input_tokens,
+        output_tokens: summary.output_tokens + row.output_tokens,
+        cache_tokens: summary.cache_tokens + row.cache_tokens,
+        estimated_tokens: summary.estimated_tokens + row.estimated_tokens,
+        cost_microunits: summary.cost_microunits + row.cost_microunits,
+      }), { requests: 0, input_tokens: 0, output_tokens: 0, cache_tokens: 0, estimated_tokens: 0, cost_microunits: 0 }),
     });
     return true;
   }

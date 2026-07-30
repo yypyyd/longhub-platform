@@ -1,0 +1,29 @@
+:root { color-scheme: light; font-family: "Microsoft YaHei", "Segoe UI", sans-serif; }
+* { box-sizing: border-box; }
+body {
+  margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 28px;
+  color: #241b1b; background: radial-gradient(circle at top, #fff5f5 0, #f7f7f8 65%);
+}
+.card {
+  width: min(100%, 420px); padding: 38px 36px 30px; border: 1px solid #eadede; border-radius: 22px;
+  background: rgba(255, 255, 255, .96); box-shadow: 0 22px 55px rgba(71, 27, 27, .12); text-align: center;
+}
+.logo { width: 72px; height: 72px; border-radius: 50%; object-fit: cover; }
+h1 { margin: 18px 0 10px; font-size: 28px; }
+.lead { margin: 0 0 28px; color: #6c5a5a; line-height: 1.7; }
+form { text-align: left; }
+label { display: block; margin-bottom: 8px; font-weight: 650; }
+input {
+  width: 100%; height: 48px; padding: 0 14px; border: 1px solid #d7caca; border-radius: 11px;
+  font: 600 16px/1 "Cascadia Mono", Consolas, monospace; letter-spacing: .4px; text-transform: uppercase;
+}
+input:focus { outline: 3px solid rgba(220, 38, 38, .14); border-color: #dc2626; }
+button {
+  width: 100%; height: 48px; margin-top: 16px; border: 0; border-radius: 11px; color: white;
+  background: linear-gradient(135deg, #ef4444, #991b1b); font: 650 16px/1 "Microsoft YaHei", sans-serif;
+  cursor: pointer;
+}
+button:disabled { opacity: .6; cursor: wait; }
+.message { min-height: 24px; margin: 16px 0 0; color: #b91c1c; line-height: 1.5; }
+.message.success { color: #15803d; }
+.device { margin: 18px 0 0; color: #9a8888; font-size: 12px; word-break: break-all; }

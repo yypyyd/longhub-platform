@@ -34,9 +34,6 @@ export function App() {
   const [deviceInfo, setDeviceInfo] = useState<DeviceInfo | undefined>();
   const [notice, setNotice] = useState("");
   const [cloudBusy, setCloudBusy] = useState(false);
-  const [pendingConfirmation, setPendingConfirmation] = useState<
-    { params: SubmitTaskParams; permissions: string[] } | undefined
-  >();
   const taskToMessage = useRef(new Map<string, string>());
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
@@ -84,12 +81,6 @@ export function App() {
 
   async function doSubmit(params: SubmitTaskParams, assistantMessageId: string) {
     const result = await window.longhub.submitTask(params);
-    if ("needsConfirmation" in result) {
-      setPendingConfirmation({ params, permissions: result.needsConfirmation });
-      setMessages((prev) => prev.filter((m) => m.id !== assistantMessageId));
-      setSending(false);
-      return;
-    }
     taskToMessage.current.set(result.taskId, assistantMessageId);
     // 任务可能在映射建立前就已完成（Mock 即时返回），补一次查询兜底
     void resolveTask(result.taskId);
@@ -112,7 +103,6 @@ export function App() {
         idempotencyKey: crypto.randomUUID(),
         skillId: CHAT_SKILL_ID,
         input: { conversationId, message: content },
-        grantedPermissions: [],
       },
       assistantId,
     );
@@ -150,7 +140,7 @@ export function App() {
     <div className="app">
       <aside className="sidebar">
         <div className="brand">
-          <div className="brand-logo">龙</div>
+          <img className="brand-logo" src="./longhub-avatar.png" alt="龙枢" />
           <div>
             <div className="brand-name">龙枢工作台</div>
             <div className="brand-sub">{coreVersion ? `Core ${coreVersion}` : "连接中…"}</div>
@@ -247,41 +237,6 @@ export function App() {
         </div>
       </main>
 
-      {pendingConfirmation && (
-        <div className="modal-backdrop">
-          <div className="modal">
-            <h3>权限确认</h3>
-            <p>该任务申请了需要人工确认的权限：</p>
-            <ul>
-              {pendingConfirmation.permissions.map((p) => (
-                <li key={p}>
-                  <code>{p}</code>
-                </li>
-              ))}
-            </ul>
-            <div className="modal-actions">
-              <button
-                onClick={() => {
-                  const { params } = pendingConfirmation;
-                  setPendingConfirmation(undefined);
-                  const assistantId = crypto.randomUUID();
-                  setMessages((prev) => [
-                    ...prev,
-                    { id: assistantId, role: "assistant", text: "", status: "pending" },
-                  ]);
-                  setSending(true);
-                  void doSubmit({ ...params, userConfirmed: true }, assistantId);
-                }}
-              >
-                批准并执行
-              </button>
-              <button className="ghost" onClick={() => setPendingConfirmation(undefined)}>
-                拒绝
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

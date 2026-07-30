@@ -104,6 +104,11 @@ const channel = createLineChannel(process.stdin, process.stdout, (msg: RpcMessag
         return;
       }
       try {
+        const permissionSet = new Set(grantedPermissions);
+        const missingPermissions = skill.permissions.filter((permission) => !permissionSet.has(permission));
+        if (missingPermissions.length > 0) {
+          throw new Error(`Core 未授予技能所需权限: ${missingPermissions.join(", ")}`);
+        }
         const output = await skill.run(input, { taskId, grantedPermissions });
         channel.send({ rpc: RPC_VERSION, id: msg.id, result: output });
       } catch (err) {

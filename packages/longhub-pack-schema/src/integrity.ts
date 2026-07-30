@@ -20,9 +20,11 @@ export function canonicalStringify(value: unknown): string {
   });
 }
 
-/** 摘要覆盖 files 全部内容（manifest.integrity.digest 之外的部分） */
-export function computePackDigest(files: Record<string, string>): string {
-  return createHash("sha256").update(canonicalStringify(files), "utf-8").digest("hex");
+/** 摘要覆盖 Manifest（排除自引用 digest）与全部文件。 */
+export function computePackDigest(manifest: PackManifest, files: Record<string, string>): string {
+  const { digest: _digest, ...integrity } = manifest.integrity;
+  const payload = { manifest: { ...manifest, integrity }, files };
+  return createHash("sha256").update(canonicalStringify(payload), "utf-8").digest("hex");
 }
 
 /** 用发布私钥（Ed25519 PEM）对摘要签名 */

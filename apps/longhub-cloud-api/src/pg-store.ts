@@ -6,18 +6,27 @@
 import { randomUUID } from "node:crypto";
 import pg from "pg";
 import type { PackFile } from "@longhub/pack-schema";
+import { redactLogValue } from "@longhub/observability";
 import {
   TASK_EVENT_TYPE,
+  type ActivationCodeRecord,
+  type ActivationRedemptionResult,
   type AdminRecord,
   type AdminRole,
   type AuditLogRecord,
   type CloudStore,
+  type ClientTelemetryAggregateRecord,
   type CloudTask,
   type CloudTaskEvent,
   type CloudTaskStatus,
   type DeviceRecord,
   type EntitlementRecord,
   type EventListener,
+  type ModelGatewayConfigRecord,
+  type ModelRequestAggregateRecord,
+  type ModelUsageAggregateRecord,
+  type KnowledgeDocumentRecord,
+  type PackReviewRecord,
   type OrderRecord,
   type PackReleaseRecord,
   type ProductRecord,
@@ -57,6 +66,28 @@ interface DeviceRow {
   display_name: string | null;
   device_token: string;
   user_id: string | null;
+  activation_code_id: string | null;
+  activated_at: string | null;
+  last_seen_at: string | null;
+  last_model_success_at: string | null;
+  last_error_code: string | null;
+  credential_rotated_at: string | null;
+  min_required_version: string | null;
+  rollout_group: string | null;
+  created_at: string;
+}
+
+interface ActivationCodeRow {
+  activation_code_id: string;
+  tenant_id: string;
+  code_hash: string;
+  code_hint: string;
+  label: string | null;
+  status: "active" | "revoked";
+  max_uses: number;
+  use_count: number;
+  pack_ids: string[];
+  expires_at: string;
   created_at: string;
 }
 
@@ -138,6 +169,7 @@ interface EntitlementRow {
   scope: "tenant" | "user" | "device";
   status: "active" | "suspended" | "revoked";
   expires_at: string;
+  source_activation_code_id: string | null;
   created_at: string;
 }
 
@@ -199,6 +231,60 @@ function toDevice(row: DeviceRow): DeviceRecord {
     display_name: row.display_name ?? undefined,
     device_token: row.device_token,
     user_id: row.user_id ?? undefined,
+    activation_code_id: row.activation_code_id ?? undefined,
+    activated_at: row.activated_at ? new Date(row.activated_at).toISOString() : undefined,
+    last_seen_at: row.last_seen_at ? new Date(row.last_seen_at).toISOString() : undefined,
+    last_model_success_at: row.last_model_success_at ? new Date(row.last_model_success_at).toISOString() : undefined,
+    last_error_code: row.last_error_code ?? undefined,
+    credential_rotated_at: row.credential_rotated_at ? new Date(row.credential_rotated_at).toISOString() : undefined,
+    min_required_version: row.min_required_version ?? undefined,
+    rollout_group: row.rollout_group ?? undefined,
+    created_at: new Date(row.created_at).toISOString(),
+  };
+}
+
+type ModelConfigRow = Omit<ModelGatewayConfigRecord,
+  "updated_at" | "fallback_config_id" | "max_desktop_version" |
+  "device_daily_tokens" | "tenant_monthly_tokens" |
+  "input_cost_microunits_per_million" | "output_cost_microunits_per_million" |
+  "cache_cost_microunits_per_million"
+> & {
+  updated_at: string | Date;
+  fallback_config_id: string | null;
+  max_desktop_version: string | null;
+  device_daily_tokens: string | number;
+  tenant_monthly_tokens: string | number;
+  input_cost_microunits_per_million: string | number;
+  output_cost_microunits_per_million: string | number;
+  cache_cost_microunits_per_million: string | number;
+};
+
+function toModelConfig(row: ModelConfigRow): ModelGatewayConfigRecord {
+  return {
+    ...row,
+    fallback_config_id: row.fallback_config_id ?? undefined,
+    max_desktop_version: row.max_desktop_version ?? undefined,
+    device_daily_tokens: Number(row.device_daily_tokens),
+    tenant_monthly_tokens: Number(row.tenant_monthly_tokens),
+    input_cost_microunits_per_million: Number(row.input_cost_microunits_per_million),
+    output_cost_microunits_per_million: Number(row.output_cost_microunits_per_million),
+    cache_cost_microunits_per_million: Number(row.cache_cost_microunits_per_million),
+    updated_at: new Date(row.updated_at).toISOString(),
+  };
+}
+
+function toActivationCode(row: ActivationCodeRow): ActivationCodeRecord {
+  return {
+    activation_code_id: row.activation_code_id,
+    tenant_id: row.tenant_id,
+    code_hash: row.code_hash,
+    code_hint: row.code_hint,
+    label: row.label ?? undefined,
+    status: row.status,
+    max_uses: Number(row.max_uses),
+    use_count: Number(row.use_count),
+    pack_ids: [...row.pack_ids],
+    expires_at: new Date(row.expires_at).toISOString(),
     created_at: new Date(row.created_at).toISOString(),
   };
 }
@@ -296,6 +382,7 @@ function toEntitlement(row: EntitlementRow): EntitlementRecord {
     scope: row.scope,
     status: row.status,
     expires_at: new Date(row.expires_at).toISOString(),
+    source_activation_code_id: row.source_activation_code_id ?? undefined,
     created_at: new Date(row.created_at).toISOString(),
   };
 }
@@ -343,6 +430,32 @@ export class PgStore implements CloudStore {
       );
       CREATE UNIQUE INDEX IF NOT EXISTS idx_device_active_fingerprint
         ON device(tenant_id, device_fingerprint) WHERE status = 'active';
+      CREATE TABLE IF NOT EXISTS activation_code (
+        activation_code_id TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL,
+        code_hash TEXT NOT NULL UNIQUE,
+        code_hint TEXT NOT NULL,
+        label TEXT,
+        status TEXT NOT NULL DEFAULT 'active',
+        max_uses INTEGER NOT NULL,
+        use_count INTEGER NOT NULL DEFAULT 0,
+        pack_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+        expires_at TIMESTAMPTZ NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        CHECK (max_uses > 0),
+        CHECK (use_count >= 0 AND use_count <= max_uses)
+      );
+      ALTER TABLE device ADD COLUMN IF NOT EXISTS activation_code_id TEXT REFERENCES activation_code(activation_code_id);
+      ALTER TABLE device ADD COLUMN IF NOT EXISTS activated_at TIMESTAMPTZ;
+      ALTER TABLE device ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ;
+      ALTER TABLE device ADD COLUMN IF NOT EXISTS last_model_success_at TIMESTAMPTZ;
+      ALTER TABLE device ADD COLUMN IF NOT EXISTS last_error_code TEXT;
+      ALTER TABLE device ADD COLUMN IF NOT EXISTS credential_rotated_at TIMESTAMPTZ;
+      ALTER TABLE device ADD COLUMN IF NOT EXISTS min_required_version TEXT;
+      ALTER TABLE device ADD COLUMN IF NOT EXISTS rollout_group TEXT;
+      CREATE INDEX IF NOT EXISTS idx_device_activation_code ON device(activation_code_id);
+      ALTER TABLE entitlement ADD COLUMN IF NOT EXISTS source_activation_code_id TEXT REFERENCES activation_code(activation_code_id);
+      CREATE INDEX IF NOT EXISTS idx_entitlement_activation_code ON entitlement(source_activation_code_id);
       CREATE TABLE IF NOT EXISTS entitlement (
         entitlement_id TEXT PRIMARY KEY,
         tenant_id TEXT NOT NULL,
@@ -431,6 +544,153 @@ export class PgStore implements CloudStore {
         created_at TIMESTAMPTZ NOT NULL DEFAULT now()
       );
       CREATE INDEX IF NOT EXISTS idx_wallet_txn_user ON wallet_txn(user_id);
+      CREATE TABLE IF NOT EXISTS model_gateway_config (
+        config_id TEXT PRIMARY KEY,
+        scope_type TEXT NOT NULL DEFAULT 'global',
+        scope_id TEXT NOT NULL DEFAULT '-',
+        enabled BOOLEAN NOT NULL DEFAULT false,
+        emergency_disabled BOOLEAN NOT NULL DEFAULT false,
+        base_url TEXT NOT NULL,
+        model_id TEXT NOT NULL,
+        display_name TEXT NOT NULL,
+        api_type TEXT NOT NULL,
+        context_window INTEGER NOT NULL,
+        max_tokens INTEGER NOT NULL,
+        encrypted_api_key TEXT,
+        fallback_config_id TEXT,
+        request_timeout_ms INTEGER NOT NULL DEFAULT 300000,
+        max_retries INTEGER NOT NULL DEFAULT 0,
+        circuit_breaker_threshold INTEGER NOT NULL DEFAULT 5,
+        circuit_breaker_cooldown_ms INTEGER NOT NULL DEFAULT 60000,
+        min_desktop_version TEXT NOT NULL DEFAULT '0.0.0',
+        max_desktop_version TEXT,
+        assistant_name TEXT NOT NULL DEFAULT '龙枢助手',
+        assistant_avatar_path TEXT NOT NULL DEFAULT '/assets/longhub-avatar.png',
+        welcome_message TEXT NOT NULL DEFAULT '你好，我是龙枢助手。',
+        quick_tasks JSONB NOT NULL DEFAULT '[]'::jsonb,
+        features JSONB NOT NULL DEFAULT '{"agent_catalog":true,"file_upload":true,"tool_execution":true}'::jsonb,
+        device_requests_per_minute INTEGER NOT NULL DEFAULT 60,
+        device_daily_tokens BIGINT NOT NULL DEFAULT 1000000,
+        tenant_monthly_tokens BIGINT NOT NULL DEFAULT 100000000,
+        max_device_concurrency INTEGER NOT NULL DEFAULT 2,
+        input_cost_microunits_per_million BIGINT NOT NULL DEFAULT 0,
+        output_cost_microunits_per_million BIGINT NOT NULL DEFAULT 0,
+        cache_cost_microunits_per_million BIGINT NOT NULL DEFAULT 0,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      -- CREATE TABLE IF NOT EXISTS 不会升级旧部署的既有表；启动时必须幂等补齐
+      -- 运行策略与额度字段，否则 Admin 会显示默认值而设备解析实际得到 undefined。
+      ALTER TABLE model_gateway_config
+        ADD COLUMN IF NOT EXISTS scope_type TEXT NOT NULL DEFAULT 'global',
+        ADD COLUMN IF NOT EXISTS scope_id TEXT NOT NULL DEFAULT '-',
+        ADD COLUMN IF NOT EXISTS emergency_disabled BOOLEAN NOT NULL DEFAULT false,
+        ADD COLUMN IF NOT EXISTS fallback_config_id TEXT,
+        ADD COLUMN IF NOT EXISTS request_timeout_ms INTEGER NOT NULL DEFAULT 300000,
+        ADD COLUMN IF NOT EXISTS max_retries INTEGER NOT NULL DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS circuit_breaker_threshold INTEGER NOT NULL DEFAULT 5,
+        ADD COLUMN IF NOT EXISTS circuit_breaker_cooldown_ms INTEGER NOT NULL DEFAULT 60000,
+        ADD COLUMN IF NOT EXISTS min_desktop_version TEXT NOT NULL DEFAULT '0.0.0',
+        ADD COLUMN IF NOT EXISTS max_desktop_version TEXT,
+        ADD COLUMN IF NOT EXISTS assistant_name TEXT NOT NULL DEFAULT '龙枢助手',
+        ADD COLUMN IF NOT EXISTS assistant_avatar_path TEXT NOT NULL DEFAULT '/assets/longhub-avatar.png',
+        ADD COLUMN IF NOT EXISTS welcome_message TEXT NOT NULL DEFAULT '你好，我是龙枢助手。',
+        ADD COLUMN IF NOT EXISTS quick_tasks JSONB NOT NULL DEFAULT '[]'::jsonb,
+        ADD COLUMN IF NOT EXISTS features JSONB NOT NULL DEFAULT '{"agent_catalog":true,"file_upload":true,"tool_execution":true}'::jsonb,
+        ADD COLUMN IF NOT EXISTS device_requests_per_minute INTEGER NOT NULL DEFAULT 60,
+        ADD COLUMN IF NOT EXISTS device_daily_tokens BIGINT NOT NULL DEFAULT 1000000,
+        ADD COLUMN IF NOT EXISTS tenant_monthly_tokens BIGINT NOT NULL DEFAULT 100000000,
+        ADD COLUMN IF NOT EXISTS max_device_concurrency INTEGER NOT NULL DEFAULT 2,
+        ADD COLUMN IF NOT EXISTS input_cost_microunits_per_million BIGINT NOT NULL DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS output_cost_microunits_per_million BIGINT NOT NULL DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS cache_cost_microunits_per_million BIGINT NOT NULL DEFAULT 0;
+      ALTER TABLE model_gateway_config
+        DROP CONSTRAINT IF EXISTS model_gateway_config_scope_type_check,
+        ADD CONSTRAINT model_gateway_config_scope_type_check CHECK (scope_type IN ('global', 'tenant', 'plan', 'device')),
+        DROP CONSTRAINT IF EXISTS model_gateway_config_scope_id_check,
+        ADD CONSTRAINT model_gateway_config_scope_id_check CHECK (scope_id ~ '^[A-Za-z0-9._-]{1,128}$'),
+        DROP CONSTRAINT IF EXISTS model_gateway_config_retry_check,
+        ADD CONSTRAINT model_gateway_config_retry_check CHECK (
+          request_timeout_ms BETWEEN 1000 AND 300000 AND max_retries BETWEEN 0 AND 2 AND
+          circuit_breaker_threshold BETWEEN 1 AND 100 AND circuit_breaker_cooldown_ms BETWEEN 1000 AND 3600000
+        );
+      CREATE INDEX IF NOT EXISTS idx_model_gateway_config_scope
+        ON model_gateway_config(scope_type, scope_id, updated_at DESC);
+      CREATE TABLE IF NOT EXISTS client_telemetry_hourly (
+        bucket_start TIMESTAMPTZ NOT NULL,
+        event_type TEXT NOT NULL,
+        desktop_version TEXT NOT NULL,
+        openclaw_version TEXT NOT NULL,
+        platform TEXT NOT NULL,
+        architecture TEXT NOT NULL,
+        value TEXT NOT NULL,
+        agent_count_bucket TEXT NOT NULL,
+        count BIGINT NOT NULL CHECK (count > 0),
+        CHECK (
+          (event_type = 'client_started' AND value IN ('lt_2s', '2_to_5s', '5_to_15s', '15_to_60s', 'gte_60s')
+            AND agent_count_bucket IN ('0', '1', '2_to_5', 'gte_6')) OR
+          (event_type = 'gateway_state' AND value IN ('starting', 'running', 'restarting', 'config_error', 'failed', 'stopped')
+            AND agent_count_bucket = '-') OR
+          (event_type = 'client_update_result' AND value IN ('busy', 'none', 'declined', 'downloaded', 'withdrawn', 'install_launched', 'failed', 'healthy', 'rollback_launched', 'rollback_completed')
+            AND agent_count_bucket = '-') OR
+          (event_type = 'product_error' AND value IN ('LH-GW-001', 'LH-CL-001', 'LH-AU-001', 'LH-AU-002', 'LH-MD-001', 'LH-UP-001', 'LH-UP-002', 'LH-GW-002', 'LH-GW-003', 'LH-GW-004', 'LH-ST-001', 'LH-ST-002', 'LH-UI-001')
+            AND agent_count_bucket = '-') OR
+          (event_type = 'previous_exit' AND value IN ('clean', 'unclean')
+            AND agent_count_bucket = '-')
+        ),
+        PRIMARY KEY (
+          bucket_start, event_type, desktop_version, openclaw_version,
+          platform, architecture, value, agent_count_bucket
+        )
+      );
+      CREATE TABLE IF NOT EXISTS model_request_hourly (
+        bucket_start TIMESTAMPTZ NOT NULL,
+        api_type TEXT NOT NULL CHECK (api_type IN ('openai-completions', 'openai-responses')),
+        outcome TEXT NOT NULL CHECK (outcome IN ('success', 'upstream_rejected', 'network_error', 'timeout')),
+        latency_bucket TEXT NOT NULL CHECK (latency_bucket IN ('lt_1s', '1_to_3s', '3_to_10s', '10_to_30s', 'gte_30s')),
+        count BIGINT NOT NULL CHECK (count > 0),
+        PRIMARY KEY (bucket_start, api_type, outcome, latency_bucket)
+      );
+      CREATE TABLE IF NOT EXISTS model_usage_aggregate (
+        period_start DATE NOT NULL,
+        period TEXT NOT NULL CHECK (period IN ('day', 'month')),
+        tenant_id TEXT NOT NULL,
+        device_id TEXT NOT NULL,
+        config_id TEXT NOT NULL,
+        request_count BIGINT NOT NULL,
+        success_count BIGINT NOT NULL,
+        error_count BIGINT NOT NULL,
+        input_tokens BIGINT NOT NULL,
+        output_tokens BIGINT NOT NULL,
+        cache_tokens BIGINT NOT NULL,
+        estimated_tokens BIGINT NOT NULL,
+        cost_microunits BIGINT NOT NULL,
+        PRIMARY KEY (period_start, period, tenant_id, device_id, config_id)
+      );
+      CREATE TABLE IF NOT EXISTS knowledge_document (
+        document_id TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        source_label TEXT NOT NULL,
+        content TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        CONSTRAINT knowledge_document_content_encrypted CHECK (left(content, 14) = 'longhub-kb-v1:')
+      );
+      CREATE INDEX IF NOT EXISTS idx_knowledge_document_tenant ON knowledge_document(tenant_id, created_at DESC);
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint
+          WHERE conname = 'knowledge_document_content_encrypted'
+            AND conrelid = 'knowledge_document'::regclass
+        ) THEN
+          ALTER TABLE knowledge_document
+            ADD CONSTRAINT knowledge_document_content_encrypted
+            CHECK (left(content, 14) = 'longhub-kb-v1:') NOT VALID;
+        END IF;
+      END $$;
+      ALTER TABLE knowledge_document VALIDATE CONSTRAINT knowledge_document_content_encrypted;
+      CREATE TABLE IF NOT EXISTS pack_review (review_id TEXT PRIMARY KEY, publisher TEXT NOT NULL, pack JSONB NOT NULL,
+        status TEXT NOT NULL, findings JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL);
     `);
   }
 
@@ -555,6 +815,148 @@ export class PgStore implements CloudStore {
     return res.rows[0] ? toDevice(res.rows[0]) : undefined;
   }
 
+  async updateDeviceOperations(deviceId: string, patch: Partial<Pick<DeviceRecord, "status" | "last_seen_at" | "last_model_success_at" | "last_error_code" | "credential_rotated_at" | "min_required_version" | "rollout_group" | "device_token">>): Promise<DeviceRecord | undefined> {
+    const current = await this.getDevice(deviceId);
+    if (!current) return undefined;
+    const next = { ...current, ...patch };
+    const result = await this.pool.query<DeviceRow>(
+      `UPDATE device SET status=$2, last_seen_at=$3, last_model_success_at=$4, last_error_code=$5,
+       credential_rotated_at=$6, min_required_version=$7, rollout_group=$8, device_token=$9
+       WHERE device_id=$1 RETURNING *`,
+      [deviceId, next.status, next.last_seen_at ?? null, next.last_model_success_at ?? null, next.last_error_code ?? null,
+        next.credential_rotated_at ?? null, next.min_required_version ?? null, next.rollout_group ?? null, next.device_token],
+    );
+    return result.rows[0] ? toDevice(result.rows[0]) : undefined;
+  }
+
+  async createActivationCode(params: {
+    tenant_id: string;
+    code_hash: string;
+    code_hint: string;
+    label?: string;
+    max_uses: number;
+    pack_ids: string[];
+    expires_at: string;
+  }): Promise<ActivationCodeRecord> {
+    const res = await this.pool.query<ActivationCodeRow>(
+      `INSERT INTO activation_code
+         (activation_code_id, tenant_id, code_hash, code_hint, label, max_uses, pack_ids, expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       RETURNING *`,
+      [
+        `act-${randomUUID()}`,
+        params.tenant_id,
+        params.code_hash,
+        params.code_hint,
+        params.label ?? null,
+        params.max_uses,
+        JSON.stringify(params.pack_ids),
+        params.expires_at,
+      ],
+    );
+    return toActivationCode(res.rows[0]!);
+  }
+
+  async getActivationCode(activationCodeId: string): Promise<ActivationCodeRecord | undefined> {
+    const res = await this.pool.query<ActivationCodeRow>(
+      `SELECT * FROM activation_code WHERE activation_code_id = $1`,
+      [activationCodeId],
+    );
+    return res.rows[0] ? toActivationCode(res.rows[0]) : undefined;
+  }
+
+  async listActivationCodes(): Promise<ActivationCodeRecord[]> {
+    const res = await this.pool.query<ActivationCodeRow>(`SELECT * FROM activation_code ORDER BY created_at DESC`);
+    return res.rows.map(toActivationCode);
+  }
+
+  async revokeActivationCode(activationCodeId: string): Promise<ActivationCodeRecord | undefined> {
+    const res = await this.pool.query<ActivationCodeRow>(
+      `UPDATE activation_code SET status = 'revoked' WHERE activation_code_id = $1 RETURNING *`,
+      [activationCodeId],
+    );
+    return res.rows[0] ? toActivationCode(res.rows[0]) : undefined;
+  }
+
+  async redeemActivationCode(params: {
+    device_id: string;
+    code_hash: string;
+    now: string;
+  }): Promise<ActivationRedemptionResult> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const deviceResult = await client.query<DeviceRow>(
+        `SELECT * FROM device WHERE device_id = $1 FOR UPDATE`,
+        [params.device_id],
+      );
+      const deviceRow = deviceResult.rows[0];
+      if (!deviceRow) {
+        await client.query("ROLLBACK");
+        return { ok: false, reason: "DEVICE_NOT_FOUND" };
+      }
+      const codeResult = await client.query<ActivationCodeRow>(
+        `SELECT * FROM activation_code WHERE code_hash = $1 FOR UPDATE`,
+        [params.code_hash],
+      );
+      const codeRow = codeResult.rows[0];
+      if (
+        !codeRow || codeRow.tenant_id !== deviceRow.tenant_id || codeRow.status !== "active" ||
+        new Date(codeRow.expires_at).toISOString() <= params.now
+      ) {
+        await client.query("ROLLBACK");
+        return { ok: false, reason: "CODE_UNAVAILABLE" };
+      }
+      if (deviceRow.activation_code_id === codeRow.activation_code_id) {
+        await client.query("COMMIT");
+        return { ok: true, code: toActivationCode(codeRow), device: toDevice(deviceRow), alreadyActivated: true };
+      }
+      if (Number(codeRow.use_count) >= Number(codeRow.max_uses)) {
+        await client.query("ROLLBACK");
+        return { ok: false, reason: "CODE_UNAVAILABLE" };
+      }
+      const updatedCode = await client.query<ActivationCodeRow>(
+        `UPDATE activation_code SET use_count = use_count + 1 WHERE activation_code_id = $1 RETURNING *`,
+        [codeRow.activation_code_id],
+      );
+      const updatedDevice = await client.query<DeviceRow>(
+        `UPDATE device SET activation_code_id = $2, activated_at = $3 WHERE device_id = $1 RETURNING *`,
+        [deviceRow.device_id, codeRow.activation_code_id, params.now],
+      );
+      if (deviceRow.activation_code_id) {
+        await client.query(
+          `UPDATE entitlement SET status = 'revoked'
+           WHERE device_id = $1 AND source_activation_code_id = $2 AND status = 'active'`,
+          [deviceRow.device_id, deviceRow.activation_code_id],
+        );
+      }
+      for (const packId of codeRow.pack_ids) {
+        await client.query(
+          `INSERT INTO entitlement
+             (entitlement_id, tenant_id, device_id, pack_id, scope, expires_at, source_activation_code_id)
+           SELECT $1, $2, $3, $4, 'device', $5, $7
+           WHERE NOT EXISTS (
+             SELECT 1 FROM entitlement
+             WHERE device_id = $3 AND pack_id = $4 AND status = 'active' AND expires_at > $6
+           )`,
+          [`ent-${randomUUID()}`, deviceRow.tenant_id, deviceRow.device_id, packId, codeRow.expires_at, params.now, codeRow.activation_code_id],
+        );
+      }
+      await client.query("COMMIT");
+      return {
+        ok: true,
+        code: toActivationCode(updatedCode.rows[0]!),
+        device: toDevice(updatedDevice.rows[0]!),
+        alreadyActivated: false,
+      };
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   async createUser(params: { email: string; password_hash: string }): Promise<{ user: UserRecord; existed: boolean }> {
     const inserted = await this.pool.query<UserRow>(
       `INSERT INTO account_user (user_id, email, password_hash)
@@ -653,7 +1055,7 @@ export class PgStore implements CloudStore {
   async appendAudit(actor: string, action: string, detail?: unknown): Promise<AuditLogRecord> {
     const res = await this.pool.query<AuditRow>(
       `INSERT INTO audit_log (audit_id, actor, action, detail) VALUES ($1, $2, $3, $4) RETURNING *`,
-      [`aud-${randomUUID()}`, actor, action, detail === undefined ? null : JSON.stringify(detail)],
+      [`aud-${randomUUID()}`, actor, action, detail === undefined ? null : JSON.stringify(redactLogValue(detail))],
     );
     return toAudit(res.rows[0]!);
   }
@@ -914,6 +1316,251 @@ export class PgStore implements CloudStore {
     );
     return res.rows[0] ? toRelease(res.rows[0]) : undefined;
   }
+
+  async getModelGatewayConfig(configId = "default"): Promise<ModelGatewayConfigRecord | undefined> {
+    const res = await this.pool.query<ModelConfigRow>(
+      `SELECT * FROM model_gateway_config WHERE config_id = $1`,
+      [configId],
+    );
+    return res.rows[0] ? toModelConfig(res.rows[0]) : undefined;
+  }
+
+  async listModelGatewayConfigs(): Promise<ModelGatewayConfigRecord[]> {
+    const res = await this.pool.query<ModelConfigRow>(`SELECT * FROM model_gateway_config ORDER BY config_id`);
+    return res.rows.map(toModelConfig);
+  }
+
+  async setModelGatewayConfig(config: ModelGatewayConfigRecord): Promise<ModelGatewayConfigRecord> {
+    const res = await this.pool.query<ModelConfigRow>(
+      `INSERT INTO model_gateway_config
+         (config_id, scope_type, scope_id, enabled, emergency_disabled, base_url, model_id, display_name, api_type,
+          context_window, max_tokens, encrypted_api_key, fallback_config_id, request_timeout_ms, max_retries,
+          circuit_breaker_threshold, circuit_breaker_cooldown_ms, min_desktop_version, max_desktop_version,
+          assistant_name, assistant_avatar_path, welcome_message, quick_tasks, features,
+          device_requests_per_minute, device_daily_tokens, tenant_monthly_tokens, max_device_concurrency,
+          input_cost_microunits_per_million, output_cost_microunits_per_million, cache_cost_microunits_per_million,
+          updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
+               $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32)
+       ON CONFLICT (config_id) DO UPDATE SET
+         scope_type = EXCLUDED.scope_type,
+         scope_id = EXCLUDED.scope_id,
+         enabled = EXCLUDED.enabled,
+         emergency_disabled = EXCLUDED.emergency_disabled,
+         base_url = EXCLUDED.base_url,
+         model_id = EXCLUDED.model_id,
+         display_name = EXCLUDED.display_name,
+         api_type = EXCLUDED.api_type,
+         context_window = EXCLUDED.context_window,
+         max_tokens = EXCLUDED.max_tokens,
+         encrypted_api_key = EXCLUDED.encrypted_api_key,
+         fallback_config_id = EXCLUDED.fallback_config_id,
+         request_timeout_ms = EXCLUDED.request_timeout_ms,
+         max_retries = EXCLUDED.max_retries,
+         circuit_breaker_threshold = EXCLUDED.circuit_breaker_threshold,
+         circuit_breaker_cooldown_ms = EXCLUDED.circuit_breaker_cooldown_ms,
+         min_desktop_version = EXCLUDED.min_desktop_version,
+         max_desktop_version = EXCLUDED.max_desktop_version,
+         assistant_name = EXCLUDED.assistant_name,
+         assistant_avatar_path = EXCLUDED.assistant_avatar_path,
+         welcome_message = EXCLUDED.welcome_message,
+         quick_tasks = EXCLUDED.quick_tasks,
+         features = EXCLUDED.features,
+         device_requests_per_minute = EXCLUDED.device_requests_per_minute,
+         device_daily_tokens = EXCLUDED.device_daily_tokens,
+         tenant_monthly_tokens = EXCLUDED.tenant_monthly_tokens,
+         max_device_concurrency = EXCLUDED.max_device_concurrency,
+         input_cost_microunits_per_million = EXCLUDED.input_cost_microunits_per_million,
+         output_cost_microunits_per_million = EXCLUDED.output_cost_microunits_per_million,
+         cache_cost_microunits_per_million = EXCLUDED.cache_cost_microunits_per_million,
+         updated_at = EXCLUDED.updated_at
+       RETURNING *`,
+      [
+        config.config_id,
+        config.scope_type,
+        config.scope_id,
+        config.enabled,
+        config.emergency_disabled,
+        config.base_url,
+        config.model_id,
+        config.display_name,
+        config.api_type,
+        config.context_window,
+        config.max_tokens,
+        config.encrypted_api_key ?? null,
+        config.fallback_config_id ?? null,
+        config.request_timeout_ms,
+        config.max_retries,
+        config.circuit_breaker_threshold,
+        config.circuit_breaker_cooldown_ms,
+        config.min_desktop_version,
+        config.max_desktop_version ?? null,
+        config.assistant_name,
+        config.assistant_avatar_path,
+        config.welcome_message,
+        JSON.stringify(config.quick_tasks),
+        JSON.stringify(config.features),
+        config.device_requests_per_minute,
+        config.device_daily_tokens,
+        config.tenant_monthly_tokens,
+        config.max_device_concurrency,
+        config.input_cost_microunits_per_million,
+        config.output_cost_microunits_per_million,
+        config.cache_cost_microunits_per_million,
+        config.updated_at,
+      ],
+    );
+    return toModelConfig(res.rows[0]!);
+  }
+
+  async incrementClientTelemetry(records: readonly ClientTelemetryAggregateRecord[]): Promise<void> {
+    if (records.length === 0) return;
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      for (const record of records) {
+        await client.query(
+          `INSERT INTO client_telemetry_hourly
+             (bucket_start, event_type, desktop_version, openclaw_version, platform,
+              architecture, value, agent_count_bucket, count)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+           ON CONFLICT (bucket_start, event_type, desktop_version, openclaw_version,
+                        platform, architecture, value, agent_count_bucket)
+           DO UPDATE SET count = client_telemetry_hourly.count + EXCLUDED.count`,
+          [
+            record.bucket_start, record.event_type, record.desktop_version, record.openclaw_version,
+            record.platform, record.architecture, record.value, record.agent_count_bucket, record.count,
+          ],
+        );
+      }
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async listClientTelemetry(): Promise<ClientTelemetryAggregateRecord[]> {
+    const result = await this.pool.query<{
+      bucket_start: string;
+      event_type: ClientTelemetryAggregateRecord["event_type"];
+      desktop_version: string;
+      openclaw_version: string;
+      platform: ClientTelemetryAggregateRecord["platform"];
+      architecture: ClientTelemetryAggregateRecord["architecture"];
+      value: string;
+      agent_count_bucket: string;
+      count: string | number;
+    }>(`SELECT * FROM client_telemetry_hourly ORDER BY bucket_start, event_type`);
+    return result.rows.map((row) => ({
+      ...row,
+      bucket_start: new Date(row.bucket_start).toISOString(),
+      count: Number(row.count),
+    }));
+  }
+
+  async incrementModelRequestMetrics(records: readonly ModelRequestAggregateRecord[]): Promise<void> {
+    if (records.length === 0) return;
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      for (const record of records) {
+        await client.query(
+          `INSERT INTO model_request_hourly (bucket_start, api_type, outcome, latency_bucket, count)
+           VALUES ($1, $2, $3, $4, $5)
+           ON CONFLICT (bucket_start, api_type, outcome, latency_bucket)
+           DO UPDATE SET count = model_request_hourly.count + EXCLUDED.count`,
+          [record.bucket_start, record.api_type, record.outcome, record.latency_bucket, record.count],
+        );
+      }
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async listModelRequestMetrics(): Promise<ModelRequestAggregateRecord[]> {
+    const result = await this.pool.query<{
+      bucket_start: string;
+      api_type: ModelRequestAggregateRecord["api_type"];
+      outcome: ModelRequestAggregateRecord["outcome"];
+      latency_bucket: ModelRequestAggregateRecord["latency_bucket"];
+      count: string | number;
+    }>(`SELECT * FROM model_request_hourly ORDER BY bucket_start, api_type`);
+    return result.rows.map((row) => ({
+      ...row,
+      bucket_start: new Date(row.bucket_start).toISOString(),
+      count: Number(row.count),
+    }));
+  }
+
+  async incrementModelUsage(records: readonly ModelUsageAggregateRecord[]): Promise<void> {
+    for (const record of records) {
+      await this.pool.query(
+        `INSERT INTO model_usage_aggregate
+           (period_start, period, tenant_id, device_id, config_id, request_count, success_count, error_count,
+            input_tokens, output_tokens, cache_tokens, estimated_tokens, cost_microunits)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+         ON CONFLICT (period_start, period, tenant_id, device_id, config_id) DO UPDATE SET
+           request_count=model_usage_aggregate.request_count+EXCLUDED.request_count,
+           success_count=model_usage_aggregate.success_count+EXCLUDED.success_count,
+           error_count=model_usage_aggregate.error_count+EXCLUDED.error_count,
+           input_tokens=model_usage_aggregate.input_tokens+EXCLUDED.input_tokens,
+           output_tokens=model_usage_aggregate.output_tokens+EXCLUDED.output_tokens,
+           cache_tokens=model_usage_aggregate.cache_tokens+EXCLUDED.cache_tokens,
+           estimated_tokens=model_usage_aggregate.estimated_tokens+EXCLUDED.estimated_tokens,
+           cost_microunits=model_usage_aggregate.cost_microunits+EXCLUDED.cost_microunits`,
+        [record.period_start, record.period, record.tenant_id, record.device_id, record.config_id, record.request_count,
+          record.success_count, record.error_count, record.input_tokens, record.output_tokens, record.cache_tokens,
+          record.estimated_tokens, record.cost_microunits],
+      );
+    }
+  }
+
+  async listModelUsage(): Promise<ModelUsageAggregateRecord[]> {
+    const result = await this.pool.query<ModelUsageAggregateRecord & Record<string, string | number>>(
+      `SELECT * FROM model_usage_aggregate ORDER BY period_start DESC, tenant_id, device_id, config_id`,
+    );
+    return result.rows.map((row) => ({
+      ...row,
+      period_start: new Date(row.period_start).toISOString().slice(0, 10),
+      request_count: Number(row.request_count), success_count: Number(row.success_count), error_count: Number(row.error_count),
+      input_tokens: Number(row.input_tokens), output_tokens: Number(row.output_tokens), cache_tokens: Number(row.cache_tokens),
+      estimated_tokens: Number(row.estimated_tokens), cost_microunits: Number(row.cost_microunits),
+    }));
+  }
+
+  async createKnowledgeDocument(params: Omit<KnowledgeDocumentRecord, "document_id" | "created_at">): Promise<KnowledgeDocumentRecord> {
+    const result = await this.pool.query<KnowledgeDocumentRecord>(
+      `INSERT INTO knowledge_document(document_id,tenant_id,title,source_label,content) VALUES($1,$2,$3,$4,$5) RETURNING *`,
+      [`doc-${randomUUID()}`, params.tenant_id, params.title, params.source_label, params.content],
+    );
+    return { ...result.rows[0]!, created_at: new Date(result.rows[0]!.created_at).toISOString() };
+  }
+
+  async listKnowledgeDocuments(tenantId: string): Promise<KnowledgeDocumentRecord[]> {
+    const result = await this.pool.query<KnowledgeDocumentRecord>(`SELECT * FROM knowledge_document WHERE tenant_id=$1 ORDER BY created_at DESC`, [tenantId]);
+    return result.rows.map((row) => ({ ...row, created_at: new Date(row.created_at).toISOString() }));
+  }
+
+  async deleteKnowledgeDocument(documentId: string): Promise<KnowledgeDocumentRecord | undefined> {
+    const result = await this.pool.query<KnowledgeDocumentRecord>(`DELETE FROM knowledge_document WHERE document_id=$1 RETURNING *`, [documentId]);
+    return result.rows[0] ? { ...result.rows[0], created_at: new Date(result.rows[0].created_at).toISOString() } : undefined;
+  }
+
+  async createPackReview(params: { publisher: string; pack: PackFile; findings: string[] }): Promise<PackReviewRecord> {
+    const now = new Date().toISOString(); const id = `review-${randomUUID()}`;
+    const result = await this.pool.query<PackReviewRecord>(`INSERT INTO pack_review(review_id,publisher,pack,status,findings,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$6) RETURNING *`, [id, params.publisher, JSON.stringify(params.pack), params.findings.length ? "rejected" : "submitted", JSON.stringify(params.findings), now]);
+    return result.rows[0]!;
+  }
+  async getPackReview(reviewId: string): Promise<PackReviewRecord | undefined> { return (await this.pool.query<PackReviewRecord>(`SELECT * FROM pack_review WHERE review_id=$1`, [reviewId])).rows[0]; }
+  async listPackReviews(): Promise<PackReviewRecord[]> { return (await this.pool.query<PackReviewRecord>(`SELECT * FROM pack_review ORDER BY created_at DESC`)).rows; }
+  async updatePackReview(reviewId: string, patch: Pick<PackReviewRecord, "status" | "findings">): Promise<PackReviewRecord | undefined> { return (await this.pool.query<PackReviewRecord>(`UPDATE pack_review SET status=$2,findings=$3,updated_at=now() WHERE review_id=$1 RETURNING *`, [reviewId, patch.status, JSON.stringify(patch.findings)])).rows[0]; }
 
   async close(): Promise<void> {
     await this.pool.end();

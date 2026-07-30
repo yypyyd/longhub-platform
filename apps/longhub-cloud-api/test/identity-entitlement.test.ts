@@ -3,6 +3,7 @@ import { once } from "node:events";
 import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createCloudApiServer } from "../src/server.js";
+import { activateTestDevice } from "./helpers/activate-device.js";
 
 const ADMIN_TOKEN = "test-admin-token";
 
@@ -65,6 +66,7 @@ describe("Identity：设备注册与凭据", () => {
 describe("Entitlement：授予/查询/撤销", () => {
   it("管理面授予授权→设备可查询→撤销后状态变 revoked", async () => {
     const { device } = await register("fp-ent");
+    await activateTestDevice(baseUrl, ADMIN_TOKEN, device.device_token);
 
     // 非管理凭据不能授予
     const denied = await fetch(`${baseUrl}/v1/admin/entitlements`, {

@@ -1,0 +1,9 @@
+{
+  "schema_version": "longhub/client-update-trust/v1",
+  "status": "pending",
+  "channel": "stable",
+  "expected_signer_subject": null,
+  "approved_by": null,
+  "approved_at": null,
+  "keys": []
+}

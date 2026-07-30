@@ -1,9 +1,12 @@
 {
   "name": "longhub-desktop",
-  "version": "0.3.0",
+  "version": "0.4.1",
   "private": true,
-  "description": "龙枢工作台：Windows 客户端（Electron + React 壳）",
+  "description": "龙枢 Windows 客户端：内嵌 OpenClaw Gateway 与原生 Control UI",
   "type": "module",
+  "engines": {
+    "node": ">=22.22.3 <23 || >=24.15.0 <25 || >=25.9.0"
+  },
   "main": "./dist/main.js",
   "types": "./dist/index.d.ts",
   "exports": {
@@ -12,6 +15,11 @@
       "default": "./dist/index.js"
     }
   },
+  "files": [
+    "dist",
+    "assets",
+    "node-runtime"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json && vite build",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.renderer.json --noEmit",
@@ -20,20 +28,35 @@
     "prototype": "node dist/prototype.js",
     "start": "electron .",
     "predist": "node -e \"const fs=require('fs');fs.mkdirSync('node-runtime',{recursive:true});fs.copyFileSync(process.execPath,'node-runtime/node.exe')\"",
-    "dist": "electron-builder --win nsis"
+    "dist": "node scripts/build-windows-release.mjs --mode public",
+    "predist:internal": "node -e \"const fs=require('fs');fs.mkdirSync('node-runtime',{recursive:true});fs.copyFileSync(process.execPath,'node-runtime/node.exe')\"",
+    "dist:internal": "node scripts/build-windows-release.mjs --mode internal",
+    "verify:release": "node scripts/release-verification.mjs --mode public",
+    "verify:release:internal": "node scripts/release-verification.mjs --mode internal",
+    "runtime:manifest": "node scripts/openclaw-runtime-manifest.mjs --write"
   },
   "build": {
     "appId": "cn.longhub.desktop",
-    "productName": "LongHub",
+    "productName": "龙枢",
     "artifactName": "LongHub-Setup-${version}.exe",
-    "asar": false,
+    "asar": true,
     "npmRebuild": false,
     "directories": {
       "output": "release"
     },
     "files": [
       "dist/**/*",
-      "package.json"
+      "assets/**/*",
+      "package.json",
+      "!node_modules/@lydell/node-pty-darwin-arm64/**/*",
+      "!node_modules/@lydell/node-pty-darwin-x64/**/*",
+      "!node_modules/@lydell/node-pty-linux-arm64/**/*",
+      "!node_modules/@lydell/node-pty-linux-x64/**/*",
+      "!node_modules/@lydell/node-pty-win32-arm64/**/*",
+      "!node_modules/sqlite-vec-darwin-arm64/**/*",
+      "!node_modules/sqlite-vec-darwin-x64/**/*",
+      "!node_modules/sqlite-vec-linux-arm64/**/*",
+      "!node_modules/sqlite-vec-linux-x64/**/*"
     ],
     "extraResources": [
       {
@@ -43,17 +66,20 @@
     ],
     "win": {
       "target": "nsis",
-      "signAndEditExecutable": false
+      "icon": "assets/longhub-icon.ico"
     },
     "nsis": {
       "oneClick": true,
-      "shortcutName": "龙枢工作台"
+      "shortcutName": "龙枢"
     }
   },
   "dependencies": {
     "@longhub/api-client": "workspace:*",
     "@longhub/core": "workspace:*",
     "@longhub/hr-suite": "workspace:*",
+    "@longhub/openclaw-compat": "workspace:*",
+    "@longhub/openclaw-bridge": "workspace:*",
+    "@longhub/observability": "workspace:*",
     "@longhub/xiaolongxia-adapter": "workspace:*",
     "@longhub/pack-schema": "workspace:*",
     "@longhub/sdk": "workspace:*",
