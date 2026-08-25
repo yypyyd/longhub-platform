@@ -9,6 +9,7 @@ import { readExternalRuntimeManifest } from "./openclaw-runtime-manifest.mjs";
 const REQUIRED_ICO_SIZES = [16, 24, 32, 48, 64, 128, 256];
 const BRAND_SCHEMA = "longhub/brand-assets/v1";
 const UPDATE_TRUST_SCHEMA = "longhub/client-update-trust/v1";
+const SKILL_TRUST_SCHEMA = "longhub/skill-trust/v1";
 
 function requiredFile(path, label) {
   if (!existsSync(path)) throw new Error(`${label}不存在: ${path}`);
@@ -54,9 +55,15 @@ export function inspectPackagedLayout(packageRoot, resourcesDirectory) {
     "assets/activation.html",
     "assets/activation.css",
     "assets/activation.js",
+    "assets/product-extension.html",
+    "assets/product-extension.css",
+    "assets/product-extension.js",
+    "assets/longhub-avatar.png",
     "assets/update-trusted-keys.json",
+    "assets/skill-trusted-keys.json",
     "dist/main.js",
     "dist/activation-preload.cjs",
+    "dist/product-extension-preload.cjs",
     "dist/activation-window.js",
     "dist/renderer/index.html",
   ]) {
@@ -64,6 +71,9 @@ export function inspectPackagedLayout(packageRoot, resourcesDirectory) {
   }
   if (entries.has("dist/activation-preload.js")) {
     throw new Error("ASAR 不得包含会被 sandbox 当作 ESM 处理的旧 activation-preload.js");
+  }
+  if (entries.has("dist/product-extension-preload.js")) {
+    throw new Error("ASAR 不得包含会被 sandbox 当作 ESM 处理的 product-extension-preload.js");
   }
 
   const runtimeManifest = readExternalRuntimeManifest(packageRoot);
@@ -100,6 +110,11 @@ export function inspectPackagedLayout(packageRoot, resourcesDirectory) {
   const packagedUpdateTrust = asar.extractFile(asarPath, "assets/update-trusted-keys.json");
   if (!sourceUpdateTrust.equals(packagedUpdateTrust)) {
     throw new Error("ASAR 内更新信任清单与源码不一致");
+  }
+  const sourceSkillTrust = readFileSync(join(packageRoot, "assets", "skill-trusted-keys.json"));
+  const packagedSkillTrust = asar.extractFile(asarPath, "assets/skill-trusted-keys.json");
+  if (!sourceSkillTrust.equals(packagedSkillTrust)) {
+    throw new Error("ASAR 内 Skill 信任清单与源码不一致");
   }
   return {
     asarPath,
@@ -161,6 +176,42 @@ export function verifyClientUpdateTrust(packageRoot, {
   if (requireApproved && manifest.expected_signer_subject.trim().toLowerCase() !== expectedSigner?.trim().toLowerCase()) {
     throw new Error("客户端更新信任清单签名主体与正式发布主体不一致");
   }
+  return manifest;
+}
+
+export function verifySkillTrust(packageRoot, { requireApproved = false } = {}) {
+  const path = requiredFile(join(packageRoot, "assets", "skill-trusted-keys.json"), "Skill 信任清单");
+  const manifest = JSON.parse(readFileSync(path, "utf8"));
+  if (!exactKeys(manifest, ["schema_version", "status", "approved_by", "approved_at", "keys"])) {
+    throw new Error("Skill 信任清单格式无效");
+  }
+  if (manifest.schema_version !== SKILL_TRUST_SCHEMA || !["pending", "approved"].includes(manifest.status) ||
+    !Array.isArray(manifest.keys) || manifest.keys.length > 32) throw new Error("Skill 信任清单字段无效");
+  const keyIds = new Set();
+  for (const key of manifest.keys) {
+    if (!exactKeys(key, ["key_id", "public_key_pem"]) ||
+      typeof key.key_id !== "string" || !/^[a-zA-Z0-9._-]{1,128}$/.test(key.key_id) || keyIds.has(key.key_id) ||
+      typeof key.public_key_pem !== "string" || key.public_key_pem.includes("PRIVATE KEY")) {
+      throw new Error("Skill 信任公钥记录无效");
+    }
+    keyIds.add(key.key_id);
+    let publicKey;
+    try {
+      publicKey = createPublicKey(key.public_key_pem);
+    } catch {
+      throw new Error(`Skill 信任公钥 PEM 无效: ${key.key_id}`);
+    }
+    if (publicKey.asymmetricKeyType !== "ed25519") throw new Error(`Skill 信任公钥必须是 Ed25519: ${key.key_id}`);
+  }
+  const validOptionalText = (value) => value === null || (typeof value === "string" && value.trim());
+  if (!validOptionalText(manifest.approved_by) ||
+    !(manifest.approved_at === null || (typeof manifest.approved_at === "string" && Number.isFinite(Date.parse(manifest.approved_at))))) {
+    throw new Error("Skill 信任清单审批字段无效");
+  }
+  const approvedComplete = manifest.keys.length > 0 && typeof manifest.approved_by === "string" &&
+    typeof manifest.approved_at === "string";
+  if (manifest.status === "approved" && !approvedComplete) throw new Error("已审批的 Skill 信任清单字段不完整");
+  if (requireApproved && manifest.status !== "approved") throw new Error("正式发布必须预置审批通过的 Skill 信任清单");
   return manifest;
 }
 
@@ -346,6 +397,7 @@ export function verifyRelease({
     requireApproved: mode === "public",
     expectedSigner,
   });
+  const skillTrust = verifySkillTrust(packageRoot, { requireApproved: mode === "public" });
 
   const nodeVersionResult = spawnSync(nodeExecutable, ["--version"], { encoding: "utf8", windowsHide: true });
   if (nodeVersionResult.status !== 0 || !isSupportedNodeVersion(nodeVersionResult.stdout)) {
@@ -374,6 +426,7 @@ export function verifyRelease({
     runtimeSmoke,
     brandStatus: sourceBrand.status,
     updateTrustStatus: updateTrust.status,
+    skillTrustStatus: skillTrust.status,
     signatures: { installer: installerSignature, mainExecutable: executableSignature, node: nodeSignature },
   };
 }

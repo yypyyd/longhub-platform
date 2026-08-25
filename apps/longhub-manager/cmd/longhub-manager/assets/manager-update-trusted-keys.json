@@ -1,0 +1,12 @@
+{
+  "schema_version": "longhub/manager-update-trust/v1",
+  "status": "approved",
+  "approved_by": "LongHub release operator",
+  "approved_at": "2026-08-16T14:27:55Z",
+  "keys": [
+    {
+      "key_id": "manager-update-2026-08",
+      "public_key_pem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEADxfshYk7Zv0wzun15/cE/edl1aE2yzDTMF7ThU4eNtw=\n-----END PUBLIC KEY-----\n"
+    }
+  ]
+}

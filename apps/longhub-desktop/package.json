@@ -1,6 +1,6 @@
 {
   "name": "longhub-desktop",
-  "version": "0.4.1",
+  "version": "0.8.4",
   "private": true,
   "description": "龙枢 Windows 客户端：内嵌 OpenClaw Gateway 与原生 Control UI",
   "type": "module",
@@ -74,8 +74,10 @@
     }
   },
   "dependencies": {
+    "@longhub/windows-credential": "workspace:*",
     "@longhub/api-client": "workspace:*",
     "@longhub/core": "workspace:*",
+    "@longhub/feature-policy": "workspace:*",
     "@longhub/hr-suite": "workspace:*",
     "@longhub/openclaw-compat": "workspace:*",
     "@longhub/openclaw-bridge": "workspace:*",

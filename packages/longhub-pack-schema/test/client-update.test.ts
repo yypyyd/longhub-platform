@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   CLIENT_UPDATE_SCHEMA,
   clientUpdateDigest,
+  clientUpdateManifestSchema,
   clientUpdateRolloutBucket,
   compareClientVersions,
   isClientUpdateRolloutEligible,
@@ -23,15 +24,16 @@ function manifest(): ClientUpdateManifest {
   const content = Buffer.from("signed-installer");
   return {
     schema_version: CLIENT_UPDATE_SCHEMA,
+    product_surface: "longhub-manager",
     sequence: 7,
     version: "0.4.0",
     channel: "stable",
     platform: "win32",
     arch: "x64",
-    filename: "LongHub-Setup-0.4.0.exe",
+    filename: "LongHub-Manager-Setup-0.4.0.exe",
     size: content.length,
     sha256: clientUpdateDigest(content),
-    url_path: "/downloads/LongHub-Setup-0.4.0.exe",
+    url_path: "/downloads/LongHub-Manager-Setup-0.4.0.exe",
     published_at: "2026-07-29T12:00:00.000Z",
     rollback_data_strategy: "snapshot_required",
     rollout: {
@@ -64,8 +66,9 @@ describe("客户端更新签名契约", () => {
     for (const changed of [
       { ...value, version: "0.4.1" },
       { ...value, sha256: "0".repeat(64) },
-      { ...value, url_path: "/downloads/LongHub-Setup-9.9.9.exe" },
+      { ...value, url_path: "/downloads/LongHub-Manager-Setup-9.9.9.exe" },
       { ...value, sequence: 6 },
+      { ...value, product_surface: "longhub-desktop" },
       { ...value, rollback_data_strategy: "backward_compatible" },
       { ...value, rollout: { ...value.rollout, status: "paused" } },
     ]) {
@@ -97,6 +100,18 @@ describe("客户端更新签名契约", () => {
       signature: signClientUpdateManifest(value, key.privateKey),
     });
     expect(verifyClientUpdateMetadata(signed({ ...value, mirror: "https://evil.example" }), trusted)).toBe(false);
+    const legacyFilename = {
+      ...value,
+      filename: "LongHub-Setup-0.4.0.exe",
+      url_path: "/downloads/LongHub-Setup-0.4.0.exe",
+    };
+    expect(clientUpdateManifestSchema.safeParse(legacyFilename).success).toBe(false);
+    expect(() => signClientUpdateManifest(
+      legacyFilename as ClientUpdateManifest,
+      key.privateKey,
+    )).toThrow();
+    const { product_surface: _surface, ...withoutProductSurface } = value;
+    expect(verifyClientUpdateMetadata(signed(withoutProductSurface), trusted)).toBe(false);
     expect(() => compareClientVersions("v0.4.0", "0.3.7")).toThrow();
     expect(() => compareClientVersions("00.4.0", "0.3.7")).toThrow();
     expect(() => compareClientVersions("9999999999.0.0", "0.3.7")).toThrow();

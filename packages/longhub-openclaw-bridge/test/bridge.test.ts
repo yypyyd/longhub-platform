@@ -1,9 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   LONGHUB_RESUME_SCREEN_SKILL,
+  LONGHUB_OFFER_LETTER_SKILL,
+  createOfferLetterToolFactory,
   createLongHubBridgeClient,
   createLongHubToolFactory,
   parseResumeScreenInput,
+  parseOfferLetterInput,
+  offerLetterParameters,
   resumeScreenParameters,
 } from "../src/index.js";
 
@@ -45,6 +49,35 @@ describe("LongHub OpenClaw Tool Bridge", () => {
       resumeText: "内容",
       agentId: "main",
       grantedPermissions: ["connector:hr-api:write"],
+    })).toThrow("禁止字段");
+  });
+
+  it("真实写工具只接受四个业务字段并转发可信上下文", async () => {
+    const execute = vi.fn(async () => ({ letter: "ok" }));
+    const tool = createOfferLetterToolFactory({ execute })(trustedContext);
+    expect(offerLetterParameters.additionalProperties).toBe(false);
+    await (Array.isArray(tool) ? tool[0]! : tool!).execute("call-offer-1", {
+      candidateName: "张三",
+      position: "前端工程师",
+      monthlySalaryCny: 30_000,
+      startDate: "2026-08-15",
+    });
+    expect(execute).toHaveBeenCalledWith({
+      skillId: LONGHUB_OFFER_LETTER_SKILL,
+      input: {
+        candidateName: "张三",
+        position: "前端工程师",
+        monthlySalaryCny: 30_000,
+        startDate: "2026-08-15",
+      },
+      context: { ...trustedContext, toolCallId: "call-offer-1" },
+    });
+    expect(() => parseOfferLetterInput({
+      candidateName: "张三",
+      position: "前端工程师",
+      monthlySalaryCny: 30_000,
+      startDate: "2026-08-15",
+      approved: true,
     })).toThrow("禁止字段");
   });
 

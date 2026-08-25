@@ -49,7 +49,7 @@ describe("龙枢受管状态维护", () => {
 
     const versionDir = join(userData, "client-updates", "downloads", "0.5.0");
     mkdirSync(versionDir, { recursive: true });
-    const completed = join(versionDir, "LongHub-Setup-0.5.0.exe");
+    const completed = join(versionDir, "LongHub-Manager-Setup-0.5.0.exe");
     const unknown = join(versionDir, "keep-me.bin");
     writeFileSync(completed, "12345");
     writeFileSync(unknown, "unknown");
@@ -72,7 +72,7 @@ describe("龙枢受管状态维护", () => {
   it("保留 pending 更新引用的旧下载和快照临时目录", () => {
     const userData = root();
     const snapshotTemp = join(userData, "client-updates", "snapshots", `9-0.5.0-${UUID}.tmp`);
-    const installer = join(userData, "client-updates", "downloads", "0.5.0", "LongHub-Setup-0.5.0.exe");
+    const installer = join(userData, "client-updates", "downloads", "0.5.0", "LongHub-Manager-Setup-0.5.0.exe");
     mkdirSync(snapshotTemp, { recursive: true });
     mkdirSync(join(installer, ".."), { recursive: true });
     writeFileSync(join(snapshotTemp, "partial"), "snapshot");
@@ -94,11 +94,11 @@ describe("龙枢受管状态维护", () => {
   it("不跟随符号链接，也不删除链接目标", () => {
     const userData = root();
     const external = root();
-    const secret = join(external, "LongHub-Setup-0.5.0.exe");
+    const secret = join(external, "LongHub-Manager-Setup-0.5.0.exe");
     writeFileSync(secret, "outside");
     const versionDir = join(userData, "client-updates", "downloads", "0.5.0");
     mkdirSync(versionDir, { recursive: true });
-    const link = join(versionDir, "LongHub-Setup-0.5.0.exe");
+    const link = join(versionDir, "LongHub-Manager-Setup-0.5.0.exe");
     symlinkSync(secret, link, "file");
     old(link);
 

@@ -9,7 +9,7 @@ import {
   signClientUpdateManifest,
   type ClientUpdateManifest,
 } from "@longhub/pack-schema";
-import { parseUpdateTrustedPublicKeys } from "../src/index.js";
+import { parseSkillSigningKey, parseUpdateSigningKey, parseUpdateTrustedPublicKeys } from "../src/index.js";
 import { createCloudApiServer, generateSigningKey } from "../src/server.js";
 
 const roots: string[] = [];
@@ -18,6 +18,54 @@ afterEach(() => {
 });
 
 describe("客户端更新签名密钥配置", () => {
+  it("从 systemd 凭据目录读取两类签名密钥，并拒绝与环境 PEM 混用", () => {
+    const root = mkdtempSync(join(tmpdir(), "longhub-signing-credentials-"));
+    roots.push(root);
+    const updateKey = generateSigningKey("update-systemd");
+    const skillKey = generateSigningKey("skill-systemd");
+    writeFileSync(join(root, "client-update-private.pem"), updateKey.privateKeyPem, "utf8");
+    writeFileSync(join(root, "client-update-public.pem"), updateKey.publicKeyPem, "utf8");
+    writeFileSync(join(root, "cloud-skill-private.pem"), skillKey.privateKeyPem, "utf8");
+    writeFileSync(join(root, "cloud-skill-public.pem"), skillKey.publicKeyPem, "utf8");
+
+    expect(parseUpdateSigningKey({
+      CREDENTIALS_DIRECTORY: root,
+      CLIENT_UPDATE_SIGNING_KEY_ID: updateKey.keyId,
+    })).toEqual(updateKey);
+    expect(parseSkillSigningKey({
+      CREDENTIALS_DIRECTORY: root,
+      SKILL_SIGNING_KEY_ID: skillKey.keyId,
+    })).toEqual(skillKey);
+    expect(() => parseUpdateSigningKey({
+      CREDENTIALS_DIRECTORY: root,
+      CLIENT_UPDATE_SIGNING_KEY_ID: updateKey.keyId,
+      CLIENT_UPDATE_SIGNING_PRIVATE_KEY_PEM: updateKey.privateKeyPem,
+    })).toThrow("不能同时使用环境 PEM 与 systemd 凭据");
+    rmSync(join(root, "cloud-skill-public.pem"));
+    expect(() => parseSkillSigningKey({
+      CREDENTIALS_DIRECTORY: root,
+      SKILL_SIGNING_KEY_ID: skillKey.keyId,
+    })).toThrow("systemd 凭据缺失");
+  });
+
+  it("Skill 专用密钥必须完整配置，并拒绝与其他用途域复用", () => {
+    const skillKey = generateSigningKey("skill-current");
+    expect(parseSkillSigningKey({
+      SKILL_SIGNING_KEY_ID: skillKey.keyId,
+      SKILL_SIGNING_PRIVATE_KEY_PEM: skillKey.privateKeyPem.replaceAll("\n", "\\n"),
+      SKILL_SIGNING_PUBLIC_KEY_PEM: skillKey.publicKeyPem.replaceAll("\n", "\\n"),
+    })).toEqual(skillKey);
+    expect(() => parseSkillSigningKey({ SKILL_SIGNING_KEY_ID: skillKey.keyId })).toThrow("必须同时配置");
+
+    const updateKey = generateSigningKey("update-current");
+    expect(() => createCloudApiServer({
+      executorUrl: "http://127.0.0.1:1",
+      signingKey: skillKey,
+      skillSigningKey: skillKey,
+      updateSigningKey: updateKey,
+    })).toThrow("必须与 Agent Pack 和客户端更新密钥分离");
+  });
+
   it("严格解析历史 Ed25519 公钥并拒绝私钥", () => {
     const oldKey = generateSigningKey("update-old");
     const parsed = parseUpdateTrustedPublicKeys(JSON.stringify({
@@ -38,15 +86,16 @@ describe("客户端更新签名密钥配置", () => {
     const currentKey = generateSigningKey("update-current");
     const manifest: ClientUpdateManifest = {
       schema_version: CLIENT_UPDATE_SCHEMA,
+      product_surface: "longhub-manager",
       sequence: 1,
       version: "0.4.0",
       channel: "stable",
       platform: "win32",
       arch: "x64",
-      filename: "LongHub-Setup-0.4.0.exe",
+      filename: "LongHub-Manager-Setup-0.4.0.exe",
       size: 10,
       sha256: "0".repeat(64),
-      url_path: "/downloads/LongHub-Setup-0.4.0.exe",
+      url_path: "/downloads/LongHub-Manager-Setup-0.4.0.exe",
       published_at: "2026-07-29T12:00:00.000Z",
       rollback_data_strategy: "snapshot_required",
       rollout: {

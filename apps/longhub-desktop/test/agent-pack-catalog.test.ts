@@ -10,7 +10,7 @@ function cloudClient(options: {
     pack_id: string;
     name: string;
     latest_version: string;
-    min_desktop_version: string;
+    min_manager_version: string;
   }>;
   entitlements?: Array<{ pack_id: string; status: string; expires_at: string }>;
 }): CloudPackClient {
@@ -29,8 +29,8 @@ describe("可安装 Agent 目录", () => {
     const result = await discoverInstallableAgentPacks({
       client: cloudClient({
         catalog: [
-          { pack_id: HR_PACK_ID, name: "云端文案不能决定身份", latest_version: "1.2.3", min_desktop_version: "0.3.6" },
-          { pack_id: "third-party.unknown", name: "未知 Agent", latest_version: "9.9.9", min_desktop_version: "0.1.0" },
+          { pack_id: HR_PACK_ID, name: "云端文案不能决定身份", latest_version: "1.2.3", min_manager_version: "0.3.6" },
+          { pack_id: "third-party.unknown", name: "未知 Agent", latest_version: "9.9.9", min_manager_version: "0.1.0" },
         ],
         entitlements: [
           { pack_id: HR_PACK_ID, status: "active", expires_at: "2026-08-29T00:00:00.000Z" },
@@ -56,7 +56,7 @@ describe("可安装 Agent 目录", () => {
       pack_id: HR_PACK_ID,
       name: "HR",
       latest_version: "1.0.0",
-      min_desktop_version: "0.3.6",
+      min_manager_version: "0.3.6",
     }];
     for (const entitlement of [
       { pack_id: HR_PACK_ID, status: "revoked", expires_at: "2026-08-29T00:00:00.000Z" },

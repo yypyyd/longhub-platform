@@ -10,7 +10,12 @@
     "build": "turbo run build",
     "test": "turbo run test",
     "lint": "turbo run lint",
-    "typecheck": "turbo run typecheck"
+    "typecheck": "turbo run typecheck",
+    "ci:quality": "pnpm typecheck && pnpm lint && pnpm build",
+    "ci:unit-contract": "node scripts/run-ci-tier.mjs unit-contract",
+    "ci:smoke": "node scripts/run-ci-tier.mjs smoke",
+    "ci:security": "node scripts/run-ci-tier.mjs security",
+    "ci:full": "node scripts/run-ci-tier.mjs full"
   },
   "devDependencies": {
     "turbo": "^2.3.3",

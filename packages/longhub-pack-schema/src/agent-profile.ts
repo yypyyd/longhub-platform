@@ -89,7 +89,7 @@ export const agentProfileSchema = z
       .strict(),
     compatibility: z
       .object({
-        minDesktopVersion: semverSchema,
+        minManagerVersion: semverSchema,
         openclawVersion: semverSchema,
         profileMigrationVersion: z.number().int().min(1).max(1),
       })

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -36,6 +36,7 @@ function composerFixture() {
     options: {
       stateDir,
       mainWorkspaceDir,
+      mainAvatarDataUrl: "data:image/png;base64,bG9uZ2h1Yg==",
       desktopVersion: "1.0.0",
       openclawVersion: "2026.7.1-2",
       modelPolicies: { "longhub.model.default": "longhub/longhub-default" },
@@ -62,7 +63,7 @@ describe("Profile → OpenClaw agents.list Config Composer", () => {
       name: "龙枢助手",
       workspace: options.mainWorkspaceDir,
       model: { primary: "longhub/longhub-default" },
-      identity: { avatar: "avatars/longhub.png" },
+      identity: { avatar: options.mainAvatarDataUrl },
     });
     const hr = config.agents.list[1];
     expect(hr.id).toBe(options.profiles[0]!.registry.agentId);
@@ -87,6 +88,18 @@ describe("Profile → OpenClaw agents.list Config Composer", () => {
     expect(hr.sandbox).toEqual({ mode: "all", scope: "agent", workspaceAccess: "rw" });
   });
 
+  it("拒绝非 PNG、超大或畸形的主头像 data URI", () => {
+    const { base, options } = composerFixture();
+    expect(() => composeOpenClawAgentConfig(base, {
+      ...options,
+      mainAvatarDataUrl: "https://evil.example/avatar.png",
+    })).toThrow("有界 PNG data URI");
+    expect(() => composeOpenClawAgentConfig(base, {
+      ...options,
+      mainAvatarDataUrl: "data:image/png;base64,not base64",
+    })).toThrow("有界 PNG data URI");
+  });
+
   it("相同输入生成确定配置且不修改基础配置", () => {
     const { base, options } = composerFixture();
     const before = JSON.stringify(base);
@@ -105,7 +118,10 @@ describe("Profile → OpenClaw agents.list Config Composer", () => {
     }) as any;
     const [main, hr] = config.agents.list;
     expect(main.tools.allow).toBeUndefined();
-    expect(hr.tools.allow).toEqual(["longhub_resume_screen"]);
+    expect(hr.tools.allow).toEqual([
+      "longhub_offer_letter",
+      "longhub_resume_screen",
+    ]);
     expect(config.plugins).toMatchObject({
       enabled: true,
       allow: ["longhub-tool-bridge"],
@@ -154,6 +170,7 @@ describe("Profile → OpenClaw agents.list Config Composer", () => {
     const openclawEntry = fileURLToPath(new URL("../node_modules/openclaw/openclaw.mjs", import.meta.url));
     const result = spawnSync(process.execPath, [openclawEntry, "config", "validate"], {
       encoding: "utf8",
+      cwd: options.stateDir,
       env: {
         ...process.env,
         OPENCLAW_CONFIG_PATH: configPath,
@@ -169,9 +186,19 @@ describe("Profile → OpenClaw agents.list Config Composer", () => {
 
   it("锁定 OpenClaw 能发现并加载 Bridge 的真实运行时契约", () => {
     const { base, options } = composerFixture();
-    const pluginPath = fileURLToPath(
+    const pluginSource = fileURLToPath(
       new URL("../../../packages/longhub-openclaw-bridge", import.meta.url),
     );
+    const pluginPath = join(options.stateDir, "product-plugins", "longhub-tool-bridge");
+    cpSync(pluginSource, pluginPath, {
+      recursive: true,
+      filter: (source) => !source.includes(`${join(pluginSource, "node_modules")}`) &&
+        !source.includes(`${join(pluginSource, ".turbo")}`),
+    });
+    cpSync(join(pluginSource, "node_modules", "typebox"), join(pluginPath, "node_modules", "typebox"), {
+      recursive: true,
+      dereference: true,
+    });
     const config = composeOpenClawAgentConfig(base, { ...options, toolBridgePluginPath: pluginPath });
     const configPath = join(options.stateDir, "openclaw.json");
     mkdirSync(options.stateDir, { recursive: true });
@@ -182,6 +209,7 @@ describe("Profile → OpenClaw agents.list Config Composer", () => {
       [openclawEntry, "plugins", "inspect", "longhub-tool-bridge", "--runtime", "--json"],
       {
         encoding: "utf8",
+        cwd: options.stateDir,
         env: {
           ...process.env,
           VITEST: undefined,
@@ -199,15 +227,18 @@ describe("Profile → OpenClaw agents.list Config Composer", () => {
     );
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
     const inspected = JSON.parse(result.stdout) as any;
-    expect(inspected).toMatchObject({
+    expect(inspected, JSON.stringify(inspected, null, 2)).toMatchObject({
       plugin: {
         id: "longhub-tool-bridge",
         status: "loaded",
         imported: true,
         activated: true,
-        toolNames: ["longhub_resume_screen"],
+        toolNames: ["longhub_resume_screen", "longhub_offer_letter"],
       },
-      tools: [{ names: ["longhub_resume_screen"], optional: true }],
+      tools: [
+        { names: ["longhub_resume_screen"], optional: true },
+        { names: ["longhub_offer_letter"], optional: true },
+      ],
     });
   }, 70_000);
 });

@@ -1,0 +1,32 @@
+name: Clean-launch Smoke E2E
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: clean-launch-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: Cloud Skill, Manager and current-page smoke
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24.x"
+          cache: false
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.22.3
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm ci:smoke
+      - run: node scripts/run-ci-tier.mjs manager-test

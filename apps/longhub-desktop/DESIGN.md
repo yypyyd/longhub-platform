@@ -1,5 +1,8 @@
 # LongHub Desktop 设计
 
+> 历史/废弃：本文描述旧 Electron/内嵌 Control UI 路线，仅作技术验证存档；不作为 clean-launch
+> 首发设计或部署依据。当前管家设计见 `apps/longhub-manager` 与 `docs/design/longhub-manager-architecture.md`。
+
 ## 界面与运行边界
 
 LongHub Desktop 是 OpenClaw 的 Windows 桌面宿主。Electron Main 负责启动和回收
@@ -117,6 +120,46 @@ Gateway 使用显式 `--auth token` 和 `gateway.mode=local` 启动。Control UI
 身份或授权证明。即使从缓存启动，OpenClaw 后续每次模型调用仍携带 Credential Manager 中的设备
 凭据访问 Cloud，服务端逐请求复验激活状态并强制覆盖真实模型，因此授权撤销不会被本地缓存绕过。
 
+## Feature Policy V2 协调
+
+设备激活后，Main 创建唯一的 FeaturePolicyCoordinator，并从独立
+`/v1/client/feature-policy` 端点执行首次刷新和 30 秒轮询。首次请求失败不阻断现有聊天链路，但所有
+新增 V2 功能在没有有效策略时都得到 POLICY_UNAVAILABLE；更新停机和 will-quit 都停止轮询并清空内存
+快照。并发调用共享同一个在途 Promise，避免定时器和产品入口叠加请求。
+
+缓存使用 `longhub/feature-policy-cache/v1`，与 runtime-config 缓存分文件保存，并精确绑定规范 Cloud
+origin 和 device_id。文档仍由共享严格解析器执行 64 KiB、未知字段、枚举和五分钟有效期校验；缓存目标
+必须是普通文件，写入使用 0600 独占临时文件和原子 rename，设备 Token 从不落盘。304 代表云端已确认
+当前 ETag，因此来源仍视为 network；只有网络异常、429 和 5xx 可降级到尚未过期的绑定缓存。
+
+离线来源��等于完整授权：低风险功能仍需通过 enabled、entitlement 和 permission 检查，高风险功能
+无条件返回 POLICY_OFFLINE。401/403 或协议错误会清除当前快照和普通文件缓存，防止后续网络错误重新
+启用旧授权。紧急停用文档发布到内存后立即改变 decide 结果，再以 feature ID 白名单回调上层；日志只
+记录 policy_version、source、feature 数量或紧急 feature ID，不记录正文和凭据。
+
+策略请求固定携带 `X-LongHub-Desktop-Version`，值来自打包态 `app.getVersion()`，不接受 Renderer、
+环境页面或策略正文覆盖。Cloud 必须先完成设备 Bearer 鉴权，再只更新该凭据所属设备的版本；版本同步
+本身不授予功能，客户端显示仍需策略解析，服务端执行仍需 Feature Policy 与 entitlement 复验。
+
+### OpenClaw 原生页面与受限扩展窗口
+
+Main 直接开放经过审查的 OpenClaw 官方路由，不再注入“智能体 / 能力 / 我的”链接。导航使用精确同源、
+精确 basePath 和路径白名单；未登记页面在普通导航和 History API 跳转后都会回到 `/chat`。Agents/Skills
+页的高风险写控件由锁定版本兼容契约移除，且不能作为安全授权边界。
+
+agent.catalog、skill.catalog 和 memory.user_controls 的 Feature Policy 仍控制后台动作及旧扩展窗口。
+只有确认中心、文件、个人数据和可恢复删除等 OpenClaw 没有安全原生面的能力继续使用独立窗口；策略刷新
+或紧急停用会关闭已经失去授权的窗口，因此旧 DOM 和已打开窗口都不是授权缓存。
+
+longhub-product scheme 在 app ready 前注册为 standard/secure，ready 后只为四条路由和三个固定静态
+资源返回安装包内文件。响应同时设置 no-store、nosniff 和拒绝外部脚本/样式、frame、form、base 的
+CSP。BrowserWindow 逐项使用 V1 契约的硬化参数，禁止新窗口和跨路由导航。
+
+Sandbox preload 不能 require workspace 包，所以生成的 CommonJS preload 只镜像 V1 schema 和两个
+IPC channel；发布回归会与共享契约逐项核对，并拒绝 preload 的 ESM 产物或 Node 文件/进程能力。Main
+为每个窗口生成 window UUID 和 context/close 各自的 32 字节 nonce，IPC 同时检查 sender webContents、
+精确 URL、entry、action、严格字段和一次性消费。Renderer 只得到 entry/title 白名单上下文。
+
 ## 一键智能体切换
 
 Agent Pack 是安装、签名、授权、升级和回滚的制品，Agent Profile 才是用户实际切换的智能体。
@@ -150,6 +193,17 @@ Registry 存放于龙枢 `userData`，使用严格版本化 JSON 和同目录临
 Profile ID 映射为“规范化 ID + 12 位 SHA-256 后缀”，更新显示名、Pack 版本或 Profile 版本不会
 改变 agentId；另一个 Pack 也不能接管已经登记的 Profile ID。Registry 损坏时安全失败，不自动
 重建映射，避免旧会话被静默绑定到新 agent。
+
+Skill Registry 与 Agent Registry 分文件存储。它保存签名 Skill Manifest 的版本集合、active/previous
+指针和 `(agentId, skillId)` 独立绑定；`agentId` 必须与 Profile 的稳定映射一致，Manifest 还必须显式允许
+该 Profile。Registry 只保存 Cloud origin + device scope 的 SHA-256 owner hash，复制到另一 owner 时
+拒绝加载。每次提交先写 0600 临时文件，并保留上一份严格可解析备份；当前文件损坏时只回退到该备份，
+owner 不匹配、当前/备份均损坏或出现未知字段时 fail-closed。严格 v0 可一次性迁移为 v1，revision 只增
+不减；同一 Skill 版本摘要不可变化，发布方不能接管已有 ID。
+
+Skill 引用信任根随应用固定打包在 `assets/skill-trusted-keys.json`。打包运行时只读取该清单，不接受
+`LONGHUB_SKILL_TRUSTED_KEYS_JSON` 改写；环境覆盖仅用于未打包开发态。正式发布校验要求清单为
+`approved`、至少一个 Ed25519 公钥且审批字段完整，内部候选可保留 `pending` 并因此禁用真实安装。
 
 Config Composer 只接收已经通过 Pack 联合校验且 Registry 状态一致的 Profile。输出始终以
 `main` 为唯一 default，并按 agentId 排序，保证相同输入生成相同配置；模型来自后台逻辑策略。
@@ -193,22 +247,23 @@ Control UI 包含原生 Agent Selector 和 `selectAgent()` 会话路由，但 20
 
 ## 普通用户功能与 Skill 开放
 
-后续功能不恢复 OpenClaw 原生设置、Channels、MCP、插件或基础设施导航，而是在 `/chat` 内增加
-“智能体”“能力”“我的”三个产品薄入口。会话管理、本机搜索/导出、用户偏好/记忆控制可以默认
-开放；文件、图片、语音、知识、只读网页搜索和无代码 Agent 按租户策略开放；企业连接器、自动化和
-多 Agent 编排需要管理员授权。完整矩阵见 [../../PRODUCT_FEATURE_POLICY.md](../../PRODUCT_FEATURE_POLICY.md)。
+新增功能优先复用 OpenClaw 原生 Activity、Agents、Sessions、Usage、Tasks 和 Skills 页面；原生设置、
+Channels、MCP、插件、Cron、Nodes、Debug、Logs 和基础设施导航不开放。会话管理、本机搜索/导出、
+用户偏好/记忆控制可以默认开放；文件、图片、语音、知识、只读网页搜索和无代码 Agent 按租户策略开放；
+企业连接器、自动化和多 Agent 编排需要管理员授权。完整矩阵见
+[../../PRODUCT_FEATURE_POLICY.md](../../PRODUCT_FEATURE_POLICY.md)。
 
-Skill 第一阶段只开放官方签名 Skill 的安装/启停，以及无代码 Content/Workflow Skill。现有
-`skill-worker.ts` 使用静态 Map 注册可信实现，尚不具备第三方动态代码安装隔离；在独立 Skill
-Registry、Schema、解释器和执行沙箱完成前，不能加载用户脚本、OpenClaw 插件或 MCP 服务。详细设计见
+Skill 已开放官方签名 Skill 的安装/启停，以及无代码 Content/Workflow Skill。`skill-worker.ts` 仍只用
+静态 Map 注册可信实现，不具备第三方动态代码安装隔离；Content/Workflow 由严格 Schema 与受限解释器
+执行，不能加载用户脚本、OpenClaw 插件或 MCP 服务。详细设计见
 [../../SKILL_PLATFORM.md](../../SKILL_PLATFORM.md)。
 
-共同前置条件和实际版本顺序以 [../../EXECUTION_PLAN_V2.md](../../EXECUTION_PLAN_V2.md) 为准：Desktop
-先完成 Feature Policy、产品扩展面和确认中心，再增加 Skill、文件、知识或工作流入口。
+共同前置条件和实际版本顺序以 [../../EXECUTION_PLAN_V2.md](../../EXECUTION_PLAN_V2.md) 为准；0.5—0.8
+底座、Skill、文件知识会话与无代码工作台均已完成本地代码和累计内部候选门禁。
 
-文件、麦克风、截图和保存操作必须通过 Main 的单用途请求与一次性能力句柄，不能为新增入口恢复
-preload 或通用 IPC。当前 runtime-config 的 `file_upload` 只完成严格解析，尚未形成附件 UI、文件解析、
-类型/大小/保留和服务端路由的完整门禁，因此仍按待实现能力管理。
+文件操作通过 Main 的原生选择与一次性 Agent/Session 句柄，不能为新增入口恢复通用 preload 或 IPC。
+隔离解析子进程拒绝链接、二进制、压缩容器、超限、超时和崩溃；成功内容只经公开 `chat.send` 进入绑定
+会话并立即清空暂存。麦克风、截图和任意文件写入仍未开放。
 
 ## Tool Bridge 与 Core 权限边界
 
@@ -226,7 +281,9 @@ Core 的策略来自已验签、当前启用 Profile 和 Pack 原始声明，并
 `grantedPermissions`。每次 Bridge 执行时，Core 都会重新检查 Profile、Pack、Bridge 最小权限、
 租户/设备安全上限和任务预算，并通过设备凭据在线复验 entitlement 与已安装 Pack 版本状态；
 任一来源缺失、过期、撤销、版本吊销或云端不可达都安全失败。`main` 没有 HR grant，即使绕过
-工具可见性也会被拒绝。HR 当前只开放只读 `longhub_resume_screen`。
+工具可见性也会被拒绝。HR 当前开放只读 `longhub_resume_screen`，并以真实写权限工具
+`longhub_offer_letter` 作为确认中心的生产验收载体；后者只在 `skill.catalog` 在线策略允许时进入
+Bridge grant，离线缓存绝不恢复写权限。
 
 Core 在每次执行前重新计算有效权限：
 
@@ -239,10 +296,17 @@ OpenClaw 的工具 allowlist 只是模型可见性控制，不是最终授权。
 停用后，Core 必须立即拒绝新执行；随后 Registry 再从 `agents.list` 移除目标智能体。
 
 Bridge 上下文额外绑定 OpenClaw 生成的 `toolCallId`。需要确认的权限由 Core 创建确认记录，记录
-绑定 `agentId + profileVersion + sessionId + toolCallId + permissions + payloadDigest`，五分钟过期且
-只能消费一次。模型参数不能携带确认 ID、权限或预算；参数变化、切换智能体、Profile 升级和
-重复执行都不能复用旧确认。旧 Renderer `task.submit` 同样不再接受调用方权限，只保留无权限的
-历史原型技能；需要企业权限的执行统一进入带可信 Agent 上下文的 Bridge 路径。
+绑定 `agentId + profileVersion + skillId + sessionId + toolCallId + permissions + payloadDigest + display`，
+其中动作、对象、接收方、数据范围和费用展示由受信策略描述符结合已绑定输入计算，模型和 Skill
+不能提交运行时确认文案。确认五分钟过期且只能消费一次；参数、展示、Agent、Profile 或会话变化均
+使旧确认失效。
+
+Core 发出确认事件后，Desktop 以可信 `toolCallId` 注册单个等待者，打开独立 confirmations 子窗口；
+Renderer 只获得读取、批准、拒绝和关闭四个单用途方法，所有展示都通过 `textContent` 写入。批准后
+Desktop 只重试完全相同的原始 Bridge 请求，由 Core 消费已批准记录后才调用 Worker；拒绝、关闭、
+过期、策略撤销或窗口创建失败都会以 `BRIDGE_FORBIDDEN` 结束等待，且不会执行企业写入。旧 Renderer
+`task.submit` 同样不再接受调用方权限，只保留无权限的历史原型技能；需要企业权限的执行统一进入
+带可信 Agent 上下文的 Bridge 路径。
 
 ## 日志与诊断脱敏
 
@@ -439,6 +503,108 @@ MutationObserver 每次应用后丢弃自身产生的记录，避免与 Lit 重�
 白名单只接受 Control UI 当前 `/chat` pathname，安装自定义协议仍由独立严格解析器处理。
 
 ## 变更历史
+
+### 2026-08-01 - 恢复 OpenClaw 官方原生页面
+
+**变更内容**：主窗口恢复官方侧边栏，开放 Chat、Activity、Agents、Sessions、Usage、Tasks、Skills；
+停止注入三项自制导航，并对 Agents/Skills 写控件和其余控制面路由收口。
+
+**变更理由**：自制页面即使视觉同壳仍与 OpenClaw 官方能力和 Agent 切换语义不同。
+
+**影响范围**：Main 导航、产品 UI/CSS、兼容契约、Feature Policy UI 职责和原生页面回归。
+
+**决策依据**：优先复用上游真实实现；龙枢只保留模型、授权、私有 Skill 与高风险执行边界。
+
+### 2026-07-31 - 0.8.3 OpenClaw 同壳与真实智能体管理修正
+
+**变更内容**：三入口从横排裸链接改为 OpenClaw 同设计语言的纵向导航和同壳抽屉；单 Agent Selector
+改为常显；“智能体”首页改为当前、已启用、已停用和可安装列表，真实调用 `selectAgent()`，无代码工作台
+移动到二级创建区。
+
+**变更理由**：0.8.2 只解决 Lit 重渲染导致入口消失，没有解决视觉割裂和功能语义错误；真实用户无法
+从“智能体”找到切换位置，单 Agent 条件又被代码主动隐藏 Selector。
+
+**影响范围**：OpenClaw 兼容契约、产品入口与 Selector、Product Extension 视觉/路由、Agent 生命周期、
+E2E、真实安装验收和 0.8.3 发布。
+
+**决策依据**：主 WebUI 继续无 preload；同壳只复用白名单 DOM/`selectAgent()`，本机读写仍由隔离
+sandbox webContents 与一次性 nonce IPC 承载，从而统一体验而不合并信任边界。
+
+### 2026-07-31 - 0.8.2 产品入口持续协调
+
+**变更内容**：把“智能体 / 能力 / 我的”从一次性 DOM 注入改为页面级入口协调器；协调器监听 OpenClaw
+子树变化，在上游重渲染删除入口后自动恢复，并在 Feature Policy 刷新时精确增删入口。Selector E2E 会
+主动删除入口并断言三项自动恢复。
+
+**变更理由**：0.8.1 的隔离 E2E 在页面稳定后注入入口，未覆盖真实 OpenClaw 启动后的 Lit 重渲染；生产
+策略已经放开时，入口先出现又被上游替换，因此用户最终窗口仍不可见。
+
+**影响范围**：OpenClaw 兼容契约、Desktop 产品入口注入脚本、Selector E2E 和 0.8.2 Windows 内部候选。
+
+**决策依据**：协调器只恢复兼容契约登记的固定入口，允许列表仍完全来自 Feature Policy；空策略立即移除
+入口，入口窗口和下游能力仍分别执行策略、entitlement、Core 授权与确认。
+
+### 2026-07-31 - 策略刷新同步打包态客户端版本
+
+**变更内容**：FeaturePolicyCoordinator 在已认证刷新中携带只读打包版本，配合 Cloud 原子更新设备版本。
+
+**变更理由**：长期设备升级后仍保留首次注册版本，导致入口本地可见但 Skill 等服务端兼容检查错误拒绝。
+
+**影响范围**：Desktop Feature Policy 请求头、Cloud 设备记录和 0.8.1/0.8.2 发布顺序。
+
+**决策依据**：版本来自 Main 可信启动上下文且只在设备 Bearer 鉴权后接收；它不是权限或 entitlement，
+不能绕过服务端逐请求授权。
+
+### 2026-07-31 - 0.8.1 真实安装态菜单与头像修复
+
+**变更内容**：主 BrowserWindow 启用自动隐藏菜单并在创建后移除原生菜单；主 Agent 头像改为从打包 PNG
+读取一次并以内联 data URI 同时注入 OpenClaw Agent identity 和产品 UI。Selector E2E 增加三入口可见与
+可见图片无破图断言。
+
+**变更理由**：0.8.0 真实安装截图暴露英文菜单和相对头像路径在 Control UI 中加载失败；源码测试和发布
+smoke 未覆盖这两个用户可见结果。
+
+**影响范围**：Desktop Main 窗口、OpenClaw 主 Agent 配置、产品 UI 和 Windows 内部候选。Feature Policy
+继续 fail-closed，生产空策略时入口仍隐藏。
+
+**决策依据**：0.8.1 真实安装窗口的原生菜单句柄为 0，截图确认头像正常；发布核验和完整 CI 通过。
+
+### 2026-07-31 - 完成 0.7/0.8 产品工作台
+
+**变更内容**：在受限“我的/智能体”窗口接入会话生命周期、一次性文件解析、知识引用、本地个人资料、
+模型输入能力协商、Content Skill、受限 Workflow、Agent 覆盖层和摘要转交。
+
+**变更理由**：普通用户需要在真实产品入口完成文件与无代码组合，同时继续保持 OpenClaw 主页面无
+preload、签名 Profile 不变、跨 Agent 不继承权限或记忆。
+
+**影响范围**：Product Extension Surface、Main 生命周期、Core Workflow、Cloud 知识与模型能力协议。
+
+### 2026-07-30 - 实现 Skill Registry 与 Agent-Skill Binding
+
+**变更内容**：新增独立 v1 Registry、publisher/owner 绑定、版本集合、每 Agent 启用状态、原子备份、
+严格 v0 迁移、损坏恢复和事务快照。
+
+**变更理由**：Skill 安装状态不能修改签名 Agent Pack，也不能因文件复制、损坏重建或 Agent 切换造成
+权限与能力串用。
+
+**影响范围**：Desktop 受管状态、后续 Skill Catalog/安装事务、Agent Config Composer 和升级快照。
+
+**决策依据**：owner hash、稳定 agentId/Profile 双校验、Package allowed profile 与 publisher 所有权
+同时成立才可绑定；当前损坏只使用上一份严格备份恢复。
+
+### 2026-07-30 - 完成 Confirmation Center V1
+
+**变更内容**：Core 确认事件接入独立 sandbox 子窗口，展示可信绑定的 Agent、Skill、动作、对象、
+接收方、数据范围、权限、费用和倒计时；批准后以原始 ToolCall 请求恢复执行，关闭、拒绝和过期均拒绝。
+新增 `longhub_offer_letter` 写工具，并只在 Feature Policy 在线允许时保留其 Bridge grant。
+
+**变更理由**：确认展示必须与真实执行参数同源并纳入摘要；写操作不能因离线缓存或 Renderer 自报文案
+获得授权。
+
+**影响范围**：Core 事件订阅、Tool Bridge 等待生命周期、Agent policy 收敛、产品子窗口 IPC 和 HR 工具。
+
+**决策依据**：确认记录五分钟一次性消费，逐窗口/action/nonce 绑定；Core、Bridge、HR、Desktop 与真实
+Electron 回归全部通过。
 
 ### 2026-07-30 - 规划普通用户功能与 Skill 分级开放
 

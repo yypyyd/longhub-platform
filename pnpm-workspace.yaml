@@ -1,10 +1,21 @@
 packages:
   - apps/*
   - packages/*
+  # Clean-launch workspace: the old Electron/Pack publishing surface and
+  # packages that only served it stay on disk for audit, but are not active
+  # workspace projects or default build/test inputs.
+  - '!apps/longhub-desktop'
+  - '!apps/longhub-console'
+  - '!packages/longhub-api-client'
+  - '!packages/longhub-core'
+  - '!packages/longhub-hr-suite'
+  - '!packages/longhub-openclaw-bridge'
+  - '!packages/longhub-openclaw-compat'
+  - '!packages/longhub-sdk'
+  - '!packages/longhub-xiaolongxia-adapter'
 
 allowBuilds:
   '@google/genai': false
-  electron: true
   esbuild: true
   openclaw: true
   protobufjs: false

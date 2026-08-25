@@ -3,8 +3,17 @@ import {
   type DefinedToolPluginEntry,
 } from "openclaw/plugin-sdk/tool-plugin";
 import { createLongHubBridgeClientFromEnv } from "./client.js";
-import { LONGHUB_BRIDGE_PLUGIN_ID, LONGHUB_RESUME_SCREEN_TOOL } from "./protocol.js";
-import { createLongHubToolFactory, resumeScreenParameters } from "./tool-factory.js";
+import {
+  LONGHUB_BRIDGE_PLUGIN_ID,
+  LONGHUB_OFFER_LETTER_TOOL,
+  LONGHUB_RESUME_SCREEN_TOOL,
+} from "./protocol.js";
+import {
+  createLongHubToolFactory,
+  createOfferLetterToolFactory,
+  offerLetterParameters,
+  resumeScreenParameters,
+} from "./tool-factory.js";
 
 export * from "./client.js";
 export * from "./protocol.js";
@@ -25,6 +34,16 @@ const longHubToolBridgePlugin: DefinedToolPluginEntry = defineToolPlugin({
       optional: true,
       factory({ toolContext }) {
         return createLongHubToolFactory(bridgeClient)(toolContext);
+      },
+    }),
+    tool({
+      name: LONGHUB_OFFER_LETTER_TOOL,
+      label: "生成录用通知书",
+      description: "生成录用通知书；该写权限操作必须经过龙枢确认中心。",
+      parameters: offerLetterParameters,
+      optional: true,
+      factory({ toolContext }) {
+        return createOfferLetterToolFactory(bridgeClient)(toolContext);
       },
     }),
   ],

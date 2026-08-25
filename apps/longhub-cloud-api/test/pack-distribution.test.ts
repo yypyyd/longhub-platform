@@ -14,6 +14,12 @@ import { createCloudApiServer } from "../src/server.js";
 import { activateTestDevice } from "./helpers/activate-device.js";
 
 const ADMIN_TOKEN = "test-admin";
+/**
+ * Pack distribution is a retired compatibility surface. Keep the deep
+ * signature/revoke regression available for an explicitly requested legacy
+ * run, but never let it become part of the clean-launch default suite.
+ */
+const RUN_LEGACY_SURFACE_TESTS = process.env.LONGHUB_RUN_LEGACY_SURFACE_TESTS === "true";
 
 function buildUnsignedPack(version: string, inputFiles: Record<string, string>) {
   const profile = {
@@ -29,7 +35,7 @@ function buildUnsignedPack(version: string, inputFiles: Record<string, string>) 
     memory: { mode: "isolated" },
     lifecycle: { defaultSessionTitle: "HR 新会话", entitlementExpiryPolicy: "readonly" },
     compatibility: {
-      minDesktopVersion: "1.0.0",
+      minManagerVersion: "1.0.0",
       openclawVersion: "2026.7.1-2",
       profileMigrationVersion: 1,
     },
@@ -41,7 +47,7 @@ function buildUnsignedPack(version: string, inputFiles: Record<string, string>) 
   };
   const manifest: PackManifest = {
     schemaVersion: "longhub/v1",
-    pack: { id: "longhub.hr-suite", version, minDesktopVersion: "1.0.0" },
+    pack: { id: "longhub.hr-suite", version, minManagerVersion: "1.0.0" },
     agentTemplate: { id: "longhub.agent.hr", version: "1.0.0", profilePath: "agent-profile.json" },
     capabilities: [
       { id: "longhub.capability.recruitment", version: "1.0.0", required: true, permissions: [] },
@@ -57,9 +63,12 @@ let api: ReturnType<typeof createCloudApiServer>;
 let baseUrl: string;
 let deviceToken: string;
 let deviceId: string;
+let cleanApi: ReturnType<typeof createCloudApiServer>;
+let cleanBaseUrl: string;
 
 beforeAll(async () => {
-  api = createCloudApiServer({ executorUrl: "http://127.0.0.1:1", adminToken: ADMIN_TOKEN }).listen(0);
+  if (!RUN_LEGACY_SURFACE_TESTS) return;
+  api = createCloudApiServer({ executorUrl: "http://127.0.0.1:1", adminToken: ADMIN_TOKEN, legacySurfaceEnabled: true }).listen(0);
   await once(api, "listening");
   baseUrl = `http://127.0.0.1:${(api.address() as AddressInfo).port}`;
 
@@ -75,7 +84,7 @@ beforeAll(async () => {
 });
 
 afterAll(() => {
-  api.close();
+  if (RUN_LEGACY_SURFACE_TESTS) api.close();
 });
 
 const admin = (path: string, body?: unknown) =>
@@ -85,7 +94,7 @@ const admin = (path: string, body?: unknown) =>
     body: body === undefined ? undefined : JSON.stringify(body),
   });
 
-describe("Pack 分发闭环：上传→签名→授权下载→吊销", () => {
+describe.skipIf(!RUN_LEGACY_SURFACE_TESTS)("历史 Pack 分发兼容闭环（仅显式 LONGHUB_RUN_LEGACY_SURFACE_TESTS=true）", () => {
   it("无管理凭据上传被拒绝（401）", async () => {
     const res = await fetch(`${baseUrl}/v1/admin/packs`, {
       method: "POST",
@@ -183,5 +192,39 @@ describe("Pack 分发闭环：上传→签名→授权下载→吊销", () => {
     });
     expect(res.status).toBe(410);
     expect(((await res.json()) as { code: string }).code).toBe("RELEASE_REVOKED");
+  });
+});
+
+describe.skipIf(RUN_LEGACY_SURFACE_TESTS)("Clean launch Pack surface boundary", () => {
+  beforeAll(async () => {
+    cleanApi = createCloudApiServer({ executorUrl: "http://127.0.0.1:1" }).listen(0);
+    await once(cleanApi, "listening");
+    cleanBaseUrl = `http://127.0.0.1:${(cleanApi.address() as AddressInfo).port}`;
+  });
+
+  afterAll(() => {
+    cleanApi.close();
+  });
+
+  it("returns one stable shutdown error for retired Pack, activation and legacy SkillPackage paths", async () => {
+    const paths = [
+      "/v1/devices/activation",
+      "/v1/devices/activate",
+      "/v1/catalog/packs",
+      "/v1/packs/longhub.hr-suite/download",
+      "/v1/releases/check",
+      "/v1/admin/packs",
+      "/v1/admin/entitlements",
+      "/v1/admin/skills",
+    ];
+    for (const path of paths) {
+      const response = await fetch(cleanBaseUrl + path, {
+        method: path.endsWith("check") || path.endsWith("packs") && path.includes("/admin/") ? "POST" : "GET",
+        headers: { "content-type": "application/json" },
+        body: path.endsWith("check") || path.endsWith("packs") && path.includes("/admin/") ? "{}" : undefined,
+      });
+      expect(response.status, path).toBe(410);
+      expect((await response.json() as { code: string }).code, path).toBe("LEGACY_SURFACE_DISABLED");
+    }
   });
 });

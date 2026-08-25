@@ -1,27 +1,71 @@
 /**
- * PostgreSQL 持久化实现（建表脚本见 infrastructure/migrations/001-longhub-cloud.sql）。
+ * PostgreSQL 持久化实现（建表脚本见 infrastructure/migrations/001-longhub-cloud.sql、
+ * 020-cloud-skill-billing.sql 与 021-cloud-skill-usage.sql）。
  * 事件 event_id 由 BIGSERIAL 保证单调递增；实时订阅为进程内广播，
  * 多实例部署时需换 Redis 发布订阅。
  */
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import pg from "pg";
-import type { PackFile } from "@longhub/pack-schema";
+import type { PackFile, SkillPackage } from "@longhub/pack-schema";
+import type { CloudSkillAdapterManifest } from "@longhub/cloud-skill-adapter";
+import {
+  FEATURE_POLICY_MAX_FEATURES,
+  parseFeaturePolicyEntry,
+  type FeaturePolicyEntry,
+} from "@longhub/feature-policy";
 import { redactLogValue } from "@longhub/observability";
+import { hashSessionToken } from "./auth.js";
 import {
   TASK_EVENT_TYPE,
+  BillingSettlementError,
+  CloudTaskIdempotencyConflictError,
+  FeaturePolicyCapacityError,
+  isCloudTaskAdmissionPlaceholder,
   type ActivationCodeRecord,
   type ActivationRedemptionResult,
   type AdminRecord,
   type AdminRole,
   type AuditLogRecord,
+  type BillingOutboxRecord,
+  type BillingOutboxClaimParams,
+  type BillingOutboxFailureParams,
+  type BillingSettlementRecord,
+  type BillingSettlementResult,
+  type CloudAgentSkillBindingListQuery,
+  type CloudAgentSkillBindingRecord,
+  type CloudAgentSkillBindingResolveQuery,
+  type CloudAgentSkillBindingUpsertRequest,
   type CloudStore,
   type ClientTelemetryAggregateRecord,
   type CloudTask,
+  type CloudTaskAdmissionPlaceholder,
   type CloudTaskEvent,
+  type CloudTaskIdempotencyBinding,
   type CloudTaskStatus,
+  type CloudTaskOwner,
+  type CloudSkillAccessGrant,
+  type CloudSkillAdapterReleaseRecord,
+  type CloudSkillAccessQuery,
+  type CloudSkillEntitlementQuery,
+  type CloudSkillEntitlementRecord,
+  type CloudSkillExecutionReservation,
+  type CloudSkillExecutionReservationRequest,
+  type CloudSkillExecutionReservationResult,
+  type CloudSkillExecutionReleaseRequest,
+  type CloudSkillExecutionReleaseResult,
+  type CloudSkillOperationalSummary,
+  type CloudSkillPlanRecord,
+  type CloudSkillPlanStatus,
+  type CloudSkillSubscriptionRecord,
+  type CloudSkillSubscriptionStatus,
   type DeviceRecord,
+  type DevicePairingChallengeRecord,
+  type DevicePairingConsumeResult,
   type EntitlementRecord,
   type EventListener,
+  type FeaturePolicyRecord,
+  type FeaturePolicyEmergencyObservationRecord,
+  type HttpRouteMetricRecord,
   type ModelGatewayConfigRecord,
   type ModelRequestAggregateRecord,
   type ModelUsageAggregateRecord,
@@ -31,15 +75,273 @@ import {
   type PackReleaseRecord,
   type ProductRecord,
   type SessionRecord,
+  type SettleOrderPaymentParams,
+  type SettleOrderRefundParams,
+  type SkillReleaseRecord,
   type UserRecord,
   type WalletTransactionRecord,
 } from "./store.js";
+import {
+  normalizeCloudTaskRequestFingerprint,
+} from "./store.js";
+import { LEGACY_UNBOUND_TASK_REQUEST_FINGERPRINT } from "./task-fingerprint.js";
 
-const FAR_FUTURE = "2099-12-31T00:00:00.000Z";
+const DEFAULT_CLOUD_SKILL_LEASE_TTL_MS = 5 * 60_000;
+const MAX_CLOUD_SKILL_LEASE_TTL_MS = 15 * 60_000;
+const MIN_CLOUD_SKILL_LEASE_TTL_MS = 1_000;
+const DEFAULT_BILLING_OUTBOX_LEASE_MS = 30_000;
+const MAX_BILLING_OUTBOX_LEASE_MS = 5 * 60_000;
+export const PG_STORE_POOL_LIMITS = Object.freeze({
+  connectionTimeoutMillis: 5_000,
+  statement_timeout: 5_000,
+  // The server must cancel the statement before node-postgres rejects locally.
+  query_timeout: 6_000,
+  lock_timeout: 30_000,
+});
+
+/**
+ * The first release is deliberately migration-owned.  PgStore must never
+ * bootstrap a partial/legacy schema: doing so can make a deployment appear
+ * healthy while silently leaving old Pack, wallet, activation, or knowledge
+ * tables available.  Keep this list in code so a service startup can fail
+ * closed before it issues any business query.
+ */
+const CLEAN_LAUNCH_MIGRATION = Object.freeze({
+  version: "0001",
+  name: "clean-launch-baseline",
+  checksum: "98bbcc61604444e7c6635ebbb2a9b8ebfd0b85e81f9faf76989ac3144d00be7f",
+});
+
+const CLEAN_LAUNCH_TABLES = Object.freeze([
+  "schema_migrations",
+  "account_user",
+  "auth_session",
+  "admin_account",
+  "audit_log",
+  "device",
+  "device_pairing_challenge",
+  "cloud_task",
+  "cloud_task_event",
+  "cloud_skill_adapter_release",
+  "cloud_skill_plan",
+  "cloud_skill_plan_skill",
+  "billing_order",
+  "cloud_skill_subscription",
+  "cloud_skill_entitlement",
+  "cloud_agent_skill_binding",
+  "cloud_skill_execution_reservation",
+  "model_gateway_config",
+  "feature_policy",
+  "client_telemetry_hourly",
+  "model_request_hourly",
+  "http_route_hourly",
+  "feature_policy_emergency_observation",
+  "model_usage_aggregate",
+  "manager_release",
+  "billing_settlement",
+  "billing_outbox",
+] as const);
+
+/** Required columns are intentionally exhaustive, not just the columns used
+ * by today's routes.  A partial baseline must fail at startup rather than
+ * fail later on an infrequently used admin or outbox path. */
+const CLEAN_LAUNCH_COLUMNS: Readonly<Record<string, readonly string[]>> = Object.freeze({
+  schema_migrations: ["version", "name", "checksum", "applied_at"],
+  account_user: ["user_id", "email", "password_hash", "status", "created_at"],
+  auth_session: ["token_hash", "subject_type", "subject_id", "expires_at", "created_at"],
+  admin_account: ["admin_id", "username", "password_hash", "role", "status", "created_at"],
+  audit_log: ["audit_id", "actor", "action", "detail", "created_at"],
+  device: [
+    "device_id", "tenant_id", "status", "platform", "app_version", "device_fingerprint",
+    "display_name", "device_token_hash", "user_id", "last_seen_at", "last_model_success_at",
+    "last_error_code", "credential_rotated_at", "min_required_version", "rollout_group", "created_at",
+  ],
+  device_pairing_challenge: [
+    "challenge_id", "device_id", "tenant_id", "code_hash", "expires_at", "consumed_at", "created_at",
+  ],
+  cloud_task: [
+    "task_id", "tenant_id", "device_id", "agent_id", "idempotency_key", "kind",
+    "request_fingerprint", "status", "input", "output", "error", "created_at", "updated_at",
+  ],
+  cloud_task_event: ["event_id", "task_id", "type", "ts", "payload"],
+  cloud_skill_adapter_release: [
+    "skill_id", "version", "status", "manifest_data", "files_data", "digest", "signature_key_id",
+    "min_manager_version", "openclaw_version", "created_at", "revoked_at",
+  ],
+  cloud_skill_plan: [
+    "plan_id", "name", "description", "price_monthly_fen", "price_yearly_fen", "included_calls",
+    "requests_per_minute", "max_concurrency", "status", "created_at",
+  ],
+  cloud_skill_plan_skill: ["plan_id", "skill_id"],
+  billing_order: [
+    "order_id", "user_id", "type", "plan_id", "tenant_id", "period", "amount_fen", "status",
+    "pay_method", "provider_payment_id", "created_at", "paid_at", "refunded_at",
+  ],
+  cloud_skill_subscription: [
+    "subscription_id", "user_id", "tenant_id", "plan_id", "status", "period", "starts_at",
+    "expires_at", "cancelled_at", "refunded_at", "source_order_id", "created_at",
+  ],
+  cloud_skill_entitlement: [
+    "entitlement_id", "subscription_id", "tenant_id", "user_id", "skill_id", "plan_id", "status",
+    "expires_at", "created_at",
+  ],
+  cloud_agent_skill_binding: [
+    "binding_id", "tenant_id", "device_id", "user_id", "agent_id", "skill_id", "status",
+    "created_at", "revoked_at",
+  ],
+  cloud_skill_execution_reservation: [
+    "reservation_id", "task_id", "user_id", "tenant_id", "device_id", "agent_id", "skill_id",
+    "plan_id", "subscription_id", "input_digest", "period_start", "reserved_at", "lease_expires_at",
+    "released_at", "created_at",
+  ],
+  model_gateway_config: [
+    "config_id", "scope_type", "scope_id", "enabled", "emergency_disabled", "base_url", "model_id",
+    "display_name", "api_type", "context_window", "max_tokens", "input_capabilities", "encrypted_api_key",
+    "fallback_config_id", "request_timeout_ms", "max_retries", "circuit_breaker_threshold",
+    "circuit_breaker_cooldown_ms", "min_manager_version", "max_manager_version", "device_requests_per_minute",
+    "device_daily_tokens", "tenant_monthly_tokens", "max_device_concurrency", "input_cost_microunits_per_million",
+    "output_cost_microunits_per_million", "cache_cost_microunits_per_million", "updated_at",
+  ],
+  feature_policy: ["policy_id", "feature_id", "audience", "scope", "scope_id", "policy", "revision", "updated_at"],
+  client_telemetry_hourly: [
+    "bucket_start", "event_type", "manager_version", "openclaw_version", "platform", "architecture",
+    "value", "agent_count_bucket", "count",
+  ],
+  model_request_hourly: ["bucket_start", "api_type", "outcome", "latency_bucket", "count"],
+  http_route_hourly: ["bucket_start", "route_id", "status_class", "latency_bucket", "count"],
+  feature_policy_emergency_observation: [
+    "policy_id", "revision", "feature_id", "policy_updated_at", "first_enforced_at", "latency_ms",
+  ],
+  model_usage_aggregate: [
+    "period_start", "period", "tenant_id", "device_id", "config_id", "request_count", "success_count",
+    "error_count", "input_tokens", "output_tokens", "cache_tokens", "estimated_tokens", "cost_microunits",
+  ],
+  manager_release: [
+    "release_id", "channel", "sequence", "version", "platform", "arch", "filename", "url_path", "size",
+    "sha256", "manifest", "signature_key_id", "signature", "rollout_status", "rollout_basis_points",
+    "uploaded_by", "uploaded_at", "rollout_updated_by", "rollout_updated_at",
+  ],
+  billing_settlement: [
+    "settlement_id", "order_id", "operation", "idempotency_key", "request_hash", "method",
+    "provider_reference", "amount_fen", "created_at",
+  ],
+  billing_outbox: [
+    "outbox_id", "event_type", "aggregate_id", "settlement_id", "payload", "attempts", "available_at",
+    "locked_until", "lock_token", "published_at", "dead_lettered_at", "last_error", "created_at",
+  ],
+});
+
+export class CleanLaunchSchemaError extends Error {
+  readonly code = "CLEAN_LAUNCH_SCHEMA_INVALID" as const;
+
+  constructor(detail: string) {
+    super(`CLEAN_LAUNCH_SCHEMA_INVALID: ${detail}`);
+    this.name = "CleanLaunchSchemaError";
+  }
+}
+
+function cleanLaunchUnsupported(operation: string): Error {
+  return new Error(`CLEAN_LAUNCH_UNSUPPORTED:${operation}`);
+}
+
+function hashDeviceToken(token: string): string {
+  return createHash("sha256").update(token, "utf8").digest("hex");
+}
+
+function parseExecutionNow(value: string | undefined): Date | undefined {
+  const date = value === undefined ? new Date() : new Date(value);
+  return Number.isFinite(date.getTime()) ? date : undefined;
+}
+
+function normalizeLeaseTtl(value: number | undefined): number | undefined {
+  if (value === undefined) return DEFAULT_CLOUD_SKILL_LEASE_TTL_MS;
+  if (!Number.isSafeInteger(value) || value < MIN_CLOUD_SKILL_LEASE_TTL_MS || value > MAX_CLOUD_SKILL_LEASE_TTL_MS) {
+    return undefined;
+  }
+  return value;
+}
+
+function retryAfterSeconds(untilMs: number, nowMs: number): number | undefined {
+  if (!Number.isFinite(untilMs) || untilMs <= nowMs) return undefined;
+  return Math.max(1, Math.ceil((untilMs - nowMs) / 1000));
+}
+
+function validProviderReference(value: string | undefined): value is string {
+  return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/u.test(value);
+}
+
+function normalizeBillingOutboxLimit(value: number | undefined): number | undefined {
+  if (value === undefined) return 25;
+  return Number.isSafeInteger(value) && value >= 1 && value <= 100 ? value : undefined;
+}
+
+function normalizeBillingOutboxLease(value: number | undefined): number | undefined {
+  if (value === undefined) return DEFAULT_BILLING_OUTBOX_LEASE_MS;
+  return Number.isSafeInteger(value) && value >= 1_000 && value <= MAX_BILLING_OUTBOX_LEASE_MS
+    ? value
+    : undefined;
+}
+
+function parseBillingOutboxTime(value: string | undefined): Date | undefined {
+  const parsed = value === undefined ? new Date() : new Date(value);
+  return Number.isFinite(parsed.getTime()) ? parsed : undefined;
+}
+
+function validBillingOutboxLockToken(value: string): boolean {
+  return /^bol-[0-9a-f-]{36}$/u.test(value);
+}
+
+function validBillingOutboxErrorCode(value: string): boolean {
+  return /^[A-Z][A-Z0-9_]{0,63}$/u.test(value);
+}
+
+function billingPeriodExpiry(startedAt: string, period: "monthly" | "yearly"): string {
+  const started = new Date(startedAt);
+  if (!Number.isFinite(started.getTime())) throw new BillingSettlementError("FULFILLMENT_INVALID");
+  const days = period === "monthly" ? 31 : 366;
+  return new Date(started.getTime() + days * 24 * 60 * 60 * 1_000).toISOString();
+}
+
+function cloudSkillQueryValue(
+  query: CloudSkillEntitlementQuery | CloudSkillAccessQuery,
+  snake: string,
+  camel: string,
+): string | undefined {
+  const value = (query as Record<string, unknown>)[snake] ?? (query as Record<string, unknown>)[camel];
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function validateCloudSkillPlanFields(plan: {
+  plan_id: string;
+  name: string;
+  skill_ids: readonly string[];
+  price_monthly_fen: number;
+  price_yearly_fen: number;
+  included_calls: number;
+  requests_per_minute: number;
+  max_concurrency: number;
+}): void {
+  const uniqueSkills = new Set(plan.skill_ids);
+  if (!/^[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*)*$/.test(plan.plan_id) ||
+    !plan.name.trim() || plan.name.length > 120 || plan.skill_ids.length === 0 ||
+    uniqueSkills.size !== plan.skill_ids.length ||
+    plan.skill_ids.some((skillId) => !/^[a-z][a-z0-9.-]*\.skill\.[a-z][a-z0-9.-]*$/.test(skillId)) ||
+    !Number.isSafeInteger(plan.price_monthly_fen) || plan.price_monthly_fen < 0 ||
+    !Number.isSafeInteger(plan.price_yearly_fen) || plan.price_yearly_fen < 0 ||
+    !Number.isSafeInteger(plan.included_calls) || plan.included_calls < 0 ||
+    !Number.isSafeInteger(plan.requests_per_minute) || plan.requests_per_minute <= 0 ||
+    !Number.isSafeInteger(plan.max_concurrency) || plan.max_concurrency <= 0) {
+    throw new Error("INVALID_CLOUD_SKILL_PLAN");
+  }
+}
 
 interface TaskRow {
   task_id: string;
+  tenant_id: string;
+  device_id: string;
+  agent_id: string;
   kind: string;
+  request_fingerprint: string;
   status: CloudTaskStatus;
   input: unknown;
   output: unknown;
@@ -64,10 +366,8 @@ interface DeviceRow {
   app_version: string;
   device_fingerprint: string;
   display_name: string | null;
-  device_token: string;
+  device_token_hash: string;
   user_id: string | null;
-  activation_code_id: string | null;
-  activated_at: string | null;
   last_seen_at: string | null;
   last_model_success_at: string | null;
   last_error_code: string | null;
@@ -77,17 +377,13 @@ interface DeviceRow {
   created_at: string;
 }
 
-interface ActivationCodeRow {
-  activation_code_id: string;
+interface DevicePairingChallengeRow {
+  challenge_id: string;
+  device_id: string;
   tenant_id: string;
   code_hash: string;
-  code_hint: string;
-  label: string | null;
-  status: "active" | "revoked";
-  max_uses: number;
-  use_count: number;
-  pack_ids: string[];
   expires_at: string;
+  consumed_at: string | null;
   created_at: string;
 }
 
@@ -96,12 +392,11 @@ interface UserRow {
   email: string;
   password_hash: string;
   status: "active" | "disabled";
-  balance_fen: string | number;
   created_at: string;
 }
 
 interface SessionRow {
-  token: string;
+  token_hash: string;
   subject_type: "user" | "admin";
   subject_id: string;
   expires_at: string;
@@ -125,81 +420,141 @@ interface AuditRow {
   created_at: string;
 }
 
-interface ProductRow {
-  product_id: string;
-  pack_id: string;
-  name: string;
-  description: string;
-  price_monthly_fen: string | number;
-  price_yearly_fen: string | number;
-  status: "listed" | "unlisted";
-  created_at: string;
-}
-
 interface OrderRow {
   order_id: string;
   user_id: string;
-  type: "plan" | "recharge";
-  product_id: string | null;
-  pack_id: string | null;
-  period: "monthly" | "yearly" | null;
+  type: "cloud_skill_plan";
+  plan_id: string;
+  tenant_id: string;
+  period: "monthly" | "yearly";
   amount_fen: string | number;
   status: "pending" | "paid" | "cancelled" | "refunded";
-  pay_method: "balance" | "mock" | null;
+  pay_method: "provider" | null;
+  provider_payment_id: string | null;
   created_at: string;
   paid_at: string | null;
+  refunded_at: string | null;
 }
 
-interface TxnRow {
-  txn_id: string;
-  user_id: string;
-  type: "recharge" | "purchase" | "refund" | "adjust";
+interface BillingSettlementRow {
+  settlement_id: string;
+  order_id: string;
+  operation: "payment" | "refund";
+  idempotency_key: string;
+  request_hash: string;
+  method: "provider";
+  provider_reference: string | null;
   amount_fen: string | number;
-  balance_after_fen: string | number;
-  order_id: string | null;
-  remark: string | null;
   created_at: string;
 }
 
-interface EntitlementRow {
-  entitlement_id: string;
+interface BillingOutboxRow {
+  outbox_id: string;
+  event_type: "billing.payment.settled" | "billing.refund.settled";
+  aggregate_id: string;
+  settlement_id: string;
+  payload: Record<string, unknown>;
+  attempts: number;
+  available_at: string;
+  locked_until: string | null;
+  lock_token: string | null;
+  published_at: string | null;
+  dead_lettered_at: string | null;
+  last_error: string | null;
+  created_at: string;
+}
+
+interface CloudSkillPlanRow {
+  plan_id: string;
+  name: string;
+  description: string;
+  skill_ids: string[];
+  price_monthly_fen: string | number;
+  price_yearly_fen: string | number;
+  included_calls: string | number;
+  requests_per_minute: string | number;
+  max_concurrency: string | number;
+  status: CloudSkillPlanStatus;
+  created_at: string;
+}
+
+interface CloudSkillSubscriptionRow {
+  subscription_id: string;
+  user_id: string;
   tenant_id: string;
-  device_id: string;
-  pack_id: string;
-  scope: "tenant" | "user" | "device";
+  plan_id: string;
+  status: CloudSkillSubscriptionStatus;
+  period: "monthly" | "yearly";
+  starts_at: string;
+  expires_at: string;
+  cancelled_at: string | null;
+  refunded_at: string | null;
+  source_order_id: string;
+  created_at: string;
+}
+
+interface CloudSkillEntitlementRow {
+  entitlement_id: string;
+  subscription_id: string;
+  tenant_id: string;
+  user_id: string;
+  skill_id: string;
+  plan_id: string;
   status: "active" | "suspended" | "revoked";
   expires_at: string;
-  source_activation_code_id: string | null;
   created_at: string;
 }
 
-interface ReleaseRow {
-  pack_id: string;
+interface CloudAgentSkillBindingRow {
+  binding_id: string;
+  tenant_id: string;
+  device_id: string;
+  user_id: string | null;
+  agent_id: string;
+  skill_id: string;
+  status: "active" | "revoked";
+  created_at: string | Date;
+  revoked_at: string | Date | null;
+}
+
+interface CloudSkillExecutionReservationRow {
+  reservation_id: string;
+  task_id: string;
+  user_id: string;
+  tenant_id: string;
+  device_id: string;
+  agent_id: string;
+  skill_id: string;
+  plan_id: string;
+  subscription_id: string;
+  input_digest: string | null;
+  period_start: string | Date;
+  reserved_at: string | Date;
+  lease_expires_at: string | Date;
+  released_at: string | Date | null;
+  created_at: string | Date;
+}
+
+interface CloudSkillAdapterReleaseRow {
+  skill_id: string;
   version: string;
   status: "active" | "revoked";
-  pack: PackFile;
+  manifest_data: CloudSkillAdapterManifest;
+  files_data: Record<string, string>;
   digest: string;
   signature_key_id: string;
-  min_desktop_version: string;
-  created_at: string;
-}
-
-function toRelease(row: ReleaseRow): PackReleaseRecord {
-  return {
-    pack_id: row.pack_id,
-    version: row.version,
-    status: row.status,
-    pack: row.pack,
-    digest: row.digest,
-    signature_key_id: row.signature_key_id,
-    min_desktop_version: row.min_desktop_version,
-    created_at: new Date(row.created_at).toISOString(),
-  };
+  min_manager_version: string;
+  openclaw_version: string;
+  created_at: string | Date;
+  revoked_at: string | Date | null;
 }
 
 function toTask(row: TaskRow): CloudTask {
   return {
     task_id: row.task_id,
+    tenant_id: row.tenant_id,
+    device_id: row.device_id,
+    agent_id: row.agent_id,
     kind: row.kind,
     status: row.status,
     input: row.input,
@@ -220,7 +575,7 @@ function toEvent(row: EventRow): CloudTaskEvent {
   };
 }
 
-function toDevice(row: DeviceRow): DeviceRecord {
+function toDevice(row: DeviceRow, clearToken?: string): DeviceRecord {
   return {
     device_id: row.device_id,
     tenant_id: row.tenant_id,
@@ -229,10 +584,11 @@ function toDevice(row: DeviceRow): DeviceRecord {
     app_version: row.app_version,
     device_fingerprint: row.device_fingerprint,
     display_name: row.display_name ?? undefined,
-    device_token: row.device_token,
+    // PostgreSQL never returns the clear credential.  Callers that already
+    // possess it (registration/rotation/authentication) may pass it as the
+    // second argument for the one response where it is needed.
+    ...(clearToken === undefined ? {} : { device_token: clearToken }),
     user_id: row.user_id ?? undefined,
-    activation_code_id: row.activation_code_id ?? undefined,
-    activated_at: row.activated_at ? new Date(row.activated_at).toISOString() : undefined,
     last_seen_at: row.last_seen_at ? new Date(row.last_seen_at).toISOString() : undefined,
     last_model_success_at: row.last_model_success_at ? new Date(row.last_model_success_at).toISOString() : undefined,
     last_error_code: row.last_error_code ?? undefined,
@@ -243,15 +599,60 @@ function toDevice(row: DeviceRow): DeviceRecord {
   };
 }
 
+function toDevicePairingChallenge(row: DevicePairingChallengeRow): DevicePairingChallengeRecord {
+  return {
+    challenge_id: row.challenge_id,
+    device_id: row.device_id,
+    tenant_id: row.tenant_id,
+    code_hash: row.code_hash,
+    expires_at: new Date(row.expires_at).toISOString(),
+    ...(row.consumed_at === null ? {} : { consumed_at: new Date(row.consumed_at).toISOString() }),
+    created_at: new Date(row.created_at).toISOString(),
+  };
+}
+
+function toCloudSkillAdapterRelease(row: CloudSkillAdapterReleaseRow): CloudSkillAdapterReleaseRecord {
+  return {
+    skill_id: row.skill_id,
+    version: row.version,
+    status: row.status,
+    manifest: row.manifest_data,
+    files: { ...row.files_data },
+    digest: row.digest,
+    signature_key_id: row.signature_key_id,
+    min_manager_version: row.min_manager_version,
+    openclaw_version: row.openclaw_version,
+    created_at: new Date(row.created_at).toISOString(),
+    ...(row.revoked_at === null ? {} : { revoked_at: new Date(row.revoked_at).toISOString() }),
+  };
+}
+
+interface FeaturePolicyRow {
+  policy_id: string;
+  policy: unknown;
+  revision: string | number;
+  updated_at: string | Date;
+}
+
+function toFeaturePolicy(row: FeaturePolicyRow): FeaturePolicyRecord {
+  return {
+    policy_id: row.policy_id,
+    policy: parseFeaturePolicyEntry(row.policy),
+    revision: Number(row.revision),
+    updated_at: new Date(row.updated_at).toISOString(),
+  };
+}
+
 type ModelConfigRow = Omit<ModelGatewayConfigRecord,
-  "updated_at" | "fallback_config_id" | "max_desktop_version" |
+  "updated_at" | "fallback_config_id" | "max_manager_version" |
+  "assistant_name" | "assistant_avatar_path" | "welcome_message" | "quick_tasks" | "features" |
   "device_daily_tokens" | "tenant_monthly_tokens" |
   "input_cost_microunits_per_million" | "output_cost_microunits_per_million" |
   "cache_cost_microunits_per_million"
 > & {
   updated_at: string | Date;
   fallback_config_id: string | null;
-  max_desktop_version: string | null;
+  max_manager_version: string | null;
   device_daily_tokens: string | number;
   tenant_monthly_tokens: string | number;
   input_cost_microunits_per_million: string | number;
@@ -263,30 +664,14 @@ function toModelConfig(row: ModelConfigRow): ModelGatewayConfigRecord {
   return {
     ...row,
     fallback_config_id: row.fallback_config_id ?? undefined,
-    max_desktop_version: row.max_desktop_version ?? undefined,
+    max_manager_version: row.max_manager_version ?? undefined,
     device_daily_tokens: Number(row.device_daily_tokens),
     tenant_monthly_tokens: Number(row.tenant_monthly_tokens),
     input_cost_microunits_per_million: Number(row.input_cost_microunits_per_million),
     output_cost_microunits_per_million: Number(row.output_cost_microunits_per_million),
     cache_cost_microunits_per_million: Number(row.cache_cost_microunits_per_million),
     updated_at: new Date(row.updated_at).toISOString(),
-  };
-}
-
-function toActivationCode(row: ActivationCodeRow): ActivationCodeRecord {
-  return {
-    activation_code_id: row.activation_code_id,
-    tenant_id: row.tenant_id,
-    code_hash: row.code_hash,
-    code_hint: row.code_hint,
-    label: row.label ?? undefined,
-    status: row.status,
-    max_uses: Number(row.max_uses),
-    use_count: Number(row.use_count),
-    pack_ids: [...row.pack_ids],
-    expires_at: new Date(row.expires_at).toISOString(),
-    created_at: new Date(row.created_at).toISOString(),
-  };
+  } as unknown as ModelGatewayConfigRecord;
 }
 
 function toUser(row: UserRow): UserRecord {
@@ -295,14 +680,13 @@ function toUser(row: UserRow): UserRecord {
     email: row.email,
     password_hash: row.password_hash,
     status: row.status,
-    balance_fen: Number(row.balance_fen),
     created_at: new Date(row.created_at).toISOString(),
-  };
+  } as UserRecord;
 }
 
-function toSession(row: SessionRow): SessionRecord {
+function toSession(row: SessionRow, token: string): SessionRecord {
   return {
-    token: row.token,
+    token,
     subject_type: row.subject_type,
     subject_id: row.subject_id,
     expires_at: new Date(row.expires_at).toISOString(),
@@ -331,59 +715,134 @@ function toAudit(row: AuditRow): AuditLogRecord {
   };
 }
 
-function toProduct(row: ProductRow): ProductRecord {
-  return {
-    product_id: row.product_id,
-    pack_id: row.pack_id,
-    name: row.name,
-    description: row.description,
-    price_monthly_fen: Number(row.price_monthly_fen),
-    price_yearly_fen: Number(row.price_yearly_fen),
-    status: row.status,
-    created_at: new Date(row.created_at).toISOString(),
-  };
-}
-
 function toOrder(row: OrderRow): OrderRecord {
   return {
     order_id: row.order_id,
     user_id: row.user_id,
     type: row.type,
-    product_id: row.product_id ?? undefined,
-    pack_id: row.pack_id ?? undefined,
-    period: row.period ?? undefined,
+    plan_id: row.plan_id,
+    tenant_id: row.tenant_id,
+    period: row.period,
     amount_fen: Number(row.amount_fen),
     status: row.status,
     pay_method: row.pay_method ?? undefined,
     created_at: new Date(row.created_at).toISOString(),
     paid_at: row.paid_at ? new Date(row.paid_at).toISOString() : undefined,
-  };
+    refunded_at: row.refunded_at ? new Date(row.refunded_at).toISOString() : undefined,
+  } as unknown as OrderRecord;
 }
 
-function toTxn(row: TxnRow): WalletTransactionRecord {
+function toBillingSettlement(row: BillingSettlementRow): BillingSettlementRecord {
   return {
-    txn_id: row.txn_id,
-    user_id: row.user_id,
-    type: row.type,
+    settlement_id: row.settlement_id,
+    order_id: row.order_id,
+    operation: row.operation,
+    idempotency_key: row.idempotency_key,
+    request_hash: row.request_hash,
+    method: row.method ?? undefined,
+    provider_reference: row.provider_reference ?? undefined,
     amount_fen: Number(row.amount_fen),
-    balance_after_fen: Number(row.balance_after_fen),
-    order_id: row.order_id ?? undefined,
-    remark: row.remark ?? undefined,
+    created_at: new Date(row.created_at).toISOString(),
+  } as unknown as BillingSettlementRecord;
+}
+
+function toBillingOutbox(row: BillingOutboxRow): BillingOutboxRecord {
+  return {
+    outbox_id: row.outbox_id,
+    event_type: row.event_type,
+    aggregate_id: row.aggregate_id,
+    settlement_id: row.settlement_id,
+    payload: row.payload,
+    attempts: Number(row.attempts),
+    available_at: new Date(row.available_at).toISOString(),
+    locked_until: row.locked_until ? new Date(row.locked_until).toISOString() : undefined,
+    lock_token: row.lock_token ?? undefined,
+    published_at: row.published_at ? new Date(row.published_at).toISOString() : undefined,
+    dead_lettered_at: row.dead_lettered_at ? new Date(row.dead_lettered_at).toISOString() : undefined,
+    last_error: row.last_error ?? undefined,
     created_at: new Date(row.created_at).toISOString(),
   };
 }
 
-function toEntitlement(row: EntitlementRow): EntitlementRecord {
+function toCloudSkillPlan(row: CloudSkillPlanRow): CloudSkillPlanRecord {
+  return {
+    plan_id: row.plan_id,
+    name: row.name,
+    description: row.description,
+    skill_ids: Array.isArray(row.skill_ids) ? [...row.skill_ids] : [],
+    price_monthly_fen: Number(row.price_monthly_fen),
+    price_yearly_fen: Number(row.price_yearly_fen),
+    included_calls: Number(row.included_calls),
+    requests_per_minute: Number(row.requests_per_minute),
+    max_concurrency: Number(row.max_concurrency),
+    status: row.status,
+    created_at: new Date(row.created_at).toISOString(),
+  };
+}
+
+function toCloudSkillSubscription(row: CloudSkillSubscriptionRow): CloudSkillSubscriptionRecord {
+  return {
+    subscription_id: row.subscription_id,
+    user_id: row.user_id,
+    tenant_id: row.tenant_id,
+    plan_id: row.plan_id,
+    status: row.status,
+    period: row.period,
+    starts_at: new Date(row.starts_at).toISOString(),
+    expires_at: new Date(row.expires_at).toISOString(),
+    ...(row.cancelled_at === null ? {} : { cancelled_at: new Date(row.cancelled_at).toISOString() }),
+    ...(row.refunded_at === null ? {} : { refunded_at: new Date(row.refunded_at).toISOString() }),
+    source_order_id: row.source_order_id,
+    created_at: new Date(row.created_at).toISOString(),
+  };
+}
+
+function toCloudSkillEntitlement(row: CloudSkillEntitlementRow): CloudSkillEntitlementRecord {
   return {
     entitlement_id: row.entitlement_id,
+    subscription_id: row.subscription_id,
     tenant_id: row.tenant_id,
-    device_id: row.device_id,
-    pack_id: row.pack_id,
-    scope: row.scope,
+    user_id: row.user_id,
+    skill_id: row.skill_id,
+    plan_id: row.plan_id,
     status: row.status,
     expires_at: new Date(row.expires_at).toISOString(),
-    source_activation_code_id: row.source_activation_code_id ?? undefined,
     created_at: new Date(row.created_at).toISOString(),
+  };
+}
+
+function toCloudAgentSkillBinding(row: CloudAgentSkillBindingRow): CloudAgentSkillBindingRecord {
+  return {
+    binding_id: row.binding_id,
+    tenant_id: row.tenant_id,
+    device_id: row.device_id,
+    ...(row.user_id === null ? {} : { user_id: row.user_id }),
+    agent_id: row.agent_id,
+    skill_id: row.skill_id,
+    status: row.status,
+    created_at: new Date(row.created_at).toISOString(),
+    ...(row.revoked_at === null ? {} : { revoked_at: new Date(row.revoked_at).toISOString() }),
+  };
+}
+
+function toCloudSkillExecutionReservation(
+  row: CloudSkillExecutionReservationRow,
+): CloudSkillExecutionReservation {
+  return {
+    reservation_id: row.reservation_id,
+    task_id: row.task_id,
+    user_id: row.user_id,
+    tenant_id: row.tenant_id,
+    device_id: row.device_id,
+    agent_id: row.agent_id,
+    skill_id: row.skill_id,
+    plan_id: row.plan_id,
+    subscription_id: row.subscription_id,
+    ...(row.input_digest === null ? {} : { input_digest: row.input_digest }),
+    period_start: new Date(row.period_start).toISOString(),
+    reserved_at: new Date(row.reserved_at).toISOString(),
+    lease_expires_at: new Date(row.lease_expires_at).toISOString(),
+    ...(row.released_at === null ? {} : { released_at: new Date(row.released_at).toISOString() }),
   };
 }
 
@@ -392,323 +851,150 @@ export class PgStore implements CloudStore {
   private readonly listeners = new Map<string, Set<EventListener>>();
 
   constructor(connectionString: string) {
-    this.pool = new pg.Pool({ connectionString });
+    this.pool = new pg.Pool({
+      connectionString,
+      ...PG_STORE_POOL_LIMITS,
+    });
   }
 
-  /** 建表（幂等）；正式环境由迁移流水线执行 */
+  /**
+   * Verify the migration-owned clean-launch schema.  This method is read-only:
+   * migrations are an explicit deployment step and a service process must not
+   * create, alter, or repair tables on startup.
+   */
+  private async assertCleanLaunchSchema(): Promise<void> {
+    const tableResult = await this.pool.query<{ tablename: string }>(
+      "SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname = 'public' ORDER BY tablename",
+    );
+    const actualTables = tableResult.rows.map((row) => row.tablename);
+    const expectedTables = [...CLEAN_LAUNCH_TABLES];
+    const missingTables = expectedTables.filter((name) => !actualTables.includes(name));
+    const unexpectedTables = actualTables.filter((name) => !expectedTables.includes(name as typeof CLEAN_LAUNCH_TABLES[number]));
+    if (missingTables.length || unexpectedTables.length) {
+      throw new CleanLaunchSchemaError(JSON.stringify({ missingTables, unexpectedTables }));
+    }
+
+    const migrationResult = await this.pool.query<{
+      version: string;
+      name: string;
+      checksum: string;
+    }>(
+      "SELECT version, name, checksum FROM schema_migrations ORDER BY version",
+    );
+    const migrationRows = migrationResult.rows;
+    const baseline = migrationRows.find((row) => row.version === CLEAN_LAUNCH_MIGRATION.version);
+    const unknownMigrations = migrationRows
+      .filter((row) => row.version !== CLEAN_LAUNCH_MIGRATION.version)
+      .map((row) => row.version);
+    if (!baseline || baseline.name !== CLEAN_LAUNCH_MIGRATION.name ||
+      baseline.checksum !== CLEAN_LAUNCH_MIGRATION.checksum || unknownMigrations.length > 0) {
+      throw new CleanLaunchSchemaError(JSON.stringify({
+        expectedMigration: CLEAN_LAUNCH_MIGRATION,
+        actualMigrations: migrationRows,
+      }));
+    }
+
+    const columnResult = await this.pool.query<{
+      table_name: string;
+      column_name: string;
+    }>(
+      `SELECT table_name, column_name
+         FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = ANY($1::text[])`,
+      [expectedTables],
+    );
+    const actualColumns = new Set(columnResult.rows.map((row) => `${row.table_name}.${row.column_name}`));
+    const missingColumns: string[] = [];
+    for (const [table, columns] of Object.entries(CLEAN_LAUNCH_COLUMNS)) {
+      for (const column of columns) {
+        if (!actualColumns.has(`${table}.${column}`)) missingColumns.push(`${table}.${column}`);
+      }
+    }
+    const expectedColumnKeys = new Set(
+      Object.entries(CLEAN_LAUNCH_COLUMNS).flatMap(([table, columns]) => columns.map((column) => `${table}.${column}`)),
+    );
+    const unexpectedColumns = columnResult.rows
+      .map((row) => `${row.table_name}.${row.column_name}`)
+      .filter((key) => !expectedColumnKeys.has(key));
+    const legacyColumns = [
+      "account_user.balance_fen", "device.device_token", "device.activation_code_id", "device.activated_at",
+      "billing_order.product_id", "billing_order.pack_id", "model_gateway_config.assistant_name",
+      "model_gateway_config.assistant_avatar_path", "model_gateway_config.welcome_message",
+      "model_gateway_config.quick_tasks", "model_gateway_config.features",
+    ];
+    const retiredColumns = legacyColumns.filter((column) => actualColumns.has(column));
+    if (missingColumns.length || unexpectedColumns.length || retiredColumns.length) {
+      throw new CleanLaunchSchemaError(JSON.stringify({ missingColumns, unexpectedColumns, retiredColumns }));
+    }
+
+    const sequenceResult = await this.pool.query<{ sequence_name: string }>(
+      `SELECT sequence_name FROM information_schema.sequences
+        WHERE sequence_schema = 'public' AND sequence_name = 'feature_policy_revision_seq'`,
+    );
+    if (sequenceResult.rows.length !== 1) {
+      throw new CleanLaunchSchemaError("missing sequence feature_policy_revision_seq");
+    }
+  }
+
+  /** Migration-owned clean-launch schema; never self-creates or repairs DDL. */
   async init(): Promise<void> {
-    await this.pool.query(`
-      CREATE TABLE IF NOT EXISTS cloud_task (
-        task_id TEXT PRIMARY KEY,
-        idempotency_key TEXT NOT NULL UNIQUE,
-        kind TEXT NOT NULL,
-        status TEXT NOT NULL,
-        input JSONB,
-        output JSONB,
-        error JSONB,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-      );
-      CREATE TABLE IF NOT EXISTS cloud_task_event (
-        event_id BIGSERIAL PRIMARY KEY,
-        task_id TEXT NOT NULL REFERENCES cloud_task(task_id),
-        type TEXT NOT NULL,
-        ts TIMESTAMPTZ NOT NULL DEFAULT now(),
-        payload JSONB
-      );
-      CREATE INDEX IF NOT EXISTS idx_cloud_task_event_task ON cloud_task_event(task_id, event_id);
-      CREATE TABLE IF NOT EXISTS device (
-        device_id TEXT PRIMARY KEY,
-        tenant_id TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'active',
-        platform TEXT NOT NULL,
-        app_version TEXT NOT NULL,
-        device_fingerprint TEXT NOT NULL,
-        display_name TEXT,
-        device_token TEXT NOT NULL UNIQUE,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-      );
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_device_active_fingerprint
-        ON device(tenant_id, device_fingerprint) WHERE status = 'active';
-      CREATE TABLE IF NOT EXISTS activation_code (
-        activation_code_id TEXT PRIMARY KEY,
-        tenant_id TEXT NOT NULL,
-        code_hash TEXT NOT NULL UNIQUE,
-        code_hint TEXT NOT NULL,
-        label TEXT,
-        status TEXT NOT NULL DEFAULT 'active',
-        max_uses INTEGER NOT NULL,
-        use_count INTEGER NOT NULL DEFAULT 0,
-        pack_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
-        expires_at TIMESTAMPTZ NOT NULL,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-        CHECK (max_uses > 0),
-        CHECK (use_count >= 0 AND use_count <= max_uses)
-      );
-      ALTER TABLE device ADD COLUMN IF NOT EXISTS activation_code_id TEXT REFERENCES activation_code(activation_code_id);
-      ALTER TABLE device ADD COLUMN IF NOT EXISTS activated_at TIMESTAMPTZ;
-      ALTER TABLE device ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ;
-      ALTER TABLE device ADD COLUMN IF NOT EXISTS last_model_success_at TIMESTAMPTZ;
-      ALTER TABLE device ADD COLUMN IF NOT EXISTS last_error_code TEXT;
-      ALTER TABLE device ADD COLUMN IF NOT EXISTS credential_rotated_at TIMESTAMPTZ;
-      ALTER TABLE device ADD COLUMN IF NOT EXISTS min_required_version TEXT;
-      ALTER TABLE device ADD COLUMN IF NOT EXISTS rollout_group TEXT;
-      CREATE INDEX IF NOT EXISTS idx_device_activation_code ON device(activation_code_id);
-      ALTER TABLE entitlement ADD COLUMN IF NOT EXISTS source_activation_code_id TEXT REFERENCES activation_code(activation_code_id);
-      CREATE INDEX IF NOT EXISTS idx_entitlement_activation_code ON entitlement(source_activation_code_id);
-      CREATE TABLE IF NOT EXISTS entitlement (
-        entitlement_id TEXT PRIMARY KEY,
-        tenant_id TEXT NOT NULL,
-        device_id TEXT NOT NULL REFERENCES device(device_id),
-        pack_id TEXT NOT NULL,
-        scope TEXT NOT NULL DEFAULT 'device',
-        status TEXT NOT NULL DEFAULT 'active',
-        expires_at TIMESTAMPTZ NOT NULL,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-      );
-      CREATE INDEX IF NOT EXISTS idx_entitlement_device ON entitlement(device_id);
-      CREATE TABLE IF NOT EXISTS pack_release (
-        pack_id TEXT NOT NULL,
-        version TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'active',
-        pack JSONB NOT NULL,
-        digest TEXT NOT NULL,
-        signature_key_id TEXT NOT NULL,
-        min_desktop_version TEXT NOT NULL,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-        PRIMARY KEY (pack_id, version)
-      );
-      ALTER TABLE device ADD COLUMN IF NOT EXISTS user_id TEXT;
-      CREATE TABLE IF NOT EXISTS account_user (
-        user_id TEXT PRIMARY KEY,
-        email TEXT NOT NULL UNIQUE,
-        password_hash TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'active',
-        balance_fen BIGINT NOT NULL DEFAULT 0,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-      );
-      CREATE TABLE IF NOT EXISTS auth_session (
-        token TEXT PRIMARY KEY,
-        subject_type TEXT NOT NULL,
-        subject_id TEXT NOT NULL,
-        expires_at TIMESTAMPTZ NOT NULL,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-      );
-      CREATE TABLE IF NOT EXISTS admin_account (
-        admin_id TEXT PRIMARY KEY,
-        username TEXT NOT NULL UNIQUE,
-        password_hash TEXT NOT NULL,
-        role TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'active',
-        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-      );
-      CREATE TABLE IF NOT EXISTS audit_log (
-        audit_id TEXT PRIMARY KEY,
-        actor TEXT NOT NULL,
-        action TEXT NOT NULL,
-        detail JSONB,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-      );
-      CREATE TABLE IF NOT EXISTS product (
-        product_id TEXT PRIMARY KEY,
-        pack_id TEXT NOT NULL,
-        name TEXT NOT NULL,
-        description TEXT NOT NULL DEFAULT '',
-        price_monthly_fen BIGINT NOT NULL,
-        price_yearly_fen BIGINT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'listed',
-        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-      );
-      CREATE TABLE IF NOT EXISTS billing_order (
-        order_id TEXT PRIMARY KEY,
-        user_id TEXT NOT NULL REFERENCES account_user(user_id),
-        type TEXT NOT NULL,
-        product_id TEXT,
-        pack_id TEXT,
-        period TEXT,
-        amount_fen BIGINT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'pending',
-        pay_method TEXT,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-        paid_at TIMESTAMPTZ
-      );
-      CREATE INDEX IF NOT EXISTS idx_billing_order_user ON billing_order(user_id);
-      CREATE TABLE IF NOT EXISTS wallet_txn (
-        txn_id TEXT PRIMARY KEY,
-        user_id TEXT NOT NULL REFERENCES account_user(user_id),
-        type TEXT NOT NULL,
-        amount_fen BIGINT NOT NULL,
-        balance_after_fen BIGINT NOT NULL,
-        order_id TEXT,
-        remark TEXT,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-      );
-      CREATE INDEX IF NOT EXISTS idx_wallet_txn_user ON wallet_txn(user_id);
-      CREATE TABLE IF NOT EXISTS model_gateway_config (
-        config_id TEXT PRIMARY KEY,
-        scope_type TEXT NOT NULL DEFAULT 'global',
-        scope_id TEXT NOT NULL DEFAULT '-',
-        enabled BOOLEAN NOT NULL DEFAULT false,
-        emergency_disabled BOOLEAN NOT NULL DEFAULT false,
-        base_url TEXT NOT NULL,
-        model_id TEXT NOT NULL,
-        display_name TEXT NOT NULL,
-        api_type TEXT NOT NULL,
-        context_window INTEGER NOT NULL,
-        max_tokens INTEGER NOT NULL,
-        encrypted_api_key TEXT,
-        fallback_config_id TEXT,
-        request_timeout_ms INTEGER NOT NULL DEFAULT 300000,
-        max_retries INTEGER NOT NULL DEFAULT 0,
-        circuit_breaker_threshold INTEGER NOT NULL DEFAULT 5,
-        circuit_breaker_cooldown_ms INTEGER NOT NULL DEFAULT 60000,
-        min_desktop_version TEXT NOT NULL DEFAULT '0.0.0',
-        max_desktop_version TEXT,
-        assistant_name TEXT NOT NULL DEFAULT '龙枢助手',
-        assistant_avatar_path TEXT NOT NULL DEFAULT '/assets/longhub-avatar.png',
-        welcome_message TEXT NOT NULL DEFAULT '你好，我是龙枢助手。',
-        quick_tasks JSONB NOT NULL DEFAULT '[]'::jsonb,
-        features JSONB NOT NULL DEFAULT '{"agent_catalog":true,"file_upload":true,"tool_execution":true}'::jsonb,
-        device_requests_per_minute INTEGER NOT NULL DEFAULT 60,
-        device_daily_tokens BIGINT NOT NULL DEFAULT 1000000,
-        tenant_monthly_tokens BIGINT NOT NULL DEFAULT 100000000,
-        max_device_concurrency INTEGER NOT NULL DEFAULT 2,
-        input_cost_microunits_per_million BIGINT NOT NULL DEFAULT 0,
-        output_cost_microunits_per_million BIGINT NOT NULL DEFAULT 0,
-        cache_cost_microunits_per_million BIGINT NOT NULL DEFAULT 0,
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-      );
-      -- CREATE TABLE IF NOT EXISTS 不会升级旧部署的既有表；启动时必须幂等补齐
-      -- 运行策略与额度字段，否则 Admin 会显示默认值而设备解析实际得到 undefined。
-      ALTER TABLE model_gateway_config
-        ADD COLUMN IF NOT EXISTS scope_type TEXT NOT NULL DEFAULT 'global',
-        ADD COLUMN IF NOT EXISTS scope_id TEXT NOT NULL DEFAULT '-',
-        ADD COLUMN IF NOT EXISTS emergency_disabled BOOLEAN NOT NULL DEFAULT false,
-        ADD COLUMN IF NOT EXISTS fallback_config_id TEXT,
-        ADD COLUMN IF NOT EXISTS request_timeout_ms INTEGER NOT NULL DEFAULT 300000,
-        ADD COLUMN IF NOT EXISTS max_retries INTEGER NOT NULL DEFAULT 0,
-        ADD COLUMN IF NOT EXISTS circuit_breaker_threshold INTEGER NOT NULL DEFAULT 5,
-        ADD COLUMN IF NOT EXISTS circuit_breaker_cooldown_ms INTEGER NOT NULL DEFAULT 60000,
-        ADD COLUMN IF NOT EXISTS min_desktop_version TEXT NOT NULL DEFAULT '0.0.0',
-        ADD COLUMN IF NOT EXISTS max_desktop_version TEXT,
-        ADD COLUMN IF NOT EXISTS assistant_name TEXT NOT NULL DEFAULT '龙枢助手',
-        ADD COLUMN IF NOT EXISTS assistant_avatar_path TEXT NOT NULL DEFAULT '/assets/longhub-avatar.png',
-        ADD COLUMN IF NOT EXISTS welcome_message TEXT NOT NULL DEFAULT '你好，我是龙枢助手。',
-        ADD COLUMN IF NOT EXISTS quick_tasks JSONB NOT NULL DEFAULT '[]'::jsonb,
-        ADD COLUMN IF NOT EXISTS features JSONB NOT NULL DEFAULT '{"agent_catalog":true,"file_upload":true,"tool_execution":true}'::jsonb,
-        ADD COLUMN IF NOT EXISTS device_requests_per_minute INTEGER NOT NULL DEFAULT 60,
-        ADD COLUMN IF NOT EXISTS device_daily_tokens BIGINT NOT NULL DEFAULT 1000000,
-        ADD COLUMN IF NOT EXISTS tenant_monthly_tokens BIGINT NOT NULL DEFAULT 100000000,
-        ADD COLUMN IF NOT EXISTS max_device_concurrency INTEGER NOT NULL DEFAULT 2,
-        ADD COLUMN IF NOT EXISTS input_cost_microunits_per_million BIGINT NOT NULL DEFAULT 0,
-        ADD COLUMN IF NOT EXISTS output_cost_microunits_per_million BIGINT NOT NULL DEFAULT 0,
-        ADD COLUMN IF NOT EXISTS cache_cost_microunits_per_million BIGINT NOT NULL DEFAULT 0;
-      ALTER TABLE model_gateway_config
-        DROP CONSTRAINT IF EXISTS model_gateway_config_scope_type_check,
-        ADD CONSTRAINT model_gateway_config_scope_type_check CHECK (scope_type IN ('global', 'tenant', 'plan', 'device')),
-        DROP CONSTRAINT IF EXISTS model_gateway_config_scope_id_check,
-        ADD CONSTRAINT model_gateway_config_scope_id_check CHECK (scope_id ~ '^[A-Za-z0-9._-]{1,128}$'),
-        DROP CONSTRAINT IF EXISTS model_gateway_config_retry_check,
-        ADD CONSTRAINT model_gateway_config_retry_check CHECK (
-          request_timeout_ms BETWEEN 1000 AND 300000 AND max_retries BETWEEN 0 AND 2 AND
-          circuit_breaker_threshold BETWEEN 1 AND 100 AND circuit_breaker_cooldown_ms BETWEEN 1000 AND 3600000
-        );
-      CREATE INDEX IF NOT EXISTS idx_model_gateway_config_scope
-        ON model_gateway_config(scope_type, scope_id, updated_at DESC);
-      CREATE TABLE IF NOT EXISTS client_telemetry_hourly (
-        bucket_start TIMESTAMPTZ NOT NULL,
-        event_type TEXT NOT NULL,
-        desktop_version TEXT NOT NULL,
-        openclaw_version TEXT NOT NULL,
-        platform TEXT NOT NULL,
-        architecture TEXT NOT NULL,
-        value TEXT NOT NULL,
-        agent_count_bucket TEXT NOT NULL,
-        count BIGINT NOT NULL CHECK (count > 0),
-        CHECK (
-          (event_type = 'client_started' AND value IN ('lt_2s', '2_to_5s', '5_to_15s', '15_to_60s', 'gte_60s')
-            AND agent_count_bucket IN ('0', '1', '2_to_5', 'gte_6')) OR
-          (event_type = 'gateway_state' AND value IN ('starting', 'running', 'restarting', 'config_error', 'failed', 'stopped')
-            AND agent_count_bucket = '-') OR
-          (event_type = 'client_update_result' AND value IN ('busy', 'none', 'declined', 'downloaded', 'withdrawn', 'install_launched', 'failed', 'healthy', 'rollback_launched', 'rollback_completed')
-            AND agent_count_bucket = '-') OR
-          (event_type = 'product_error' AND value IN ('LH-GW-001', 'LH-CL-001', 'LH-AU-001', 'LH-AU-002', 'LH-MD-001', 'LH-UP-001', 'LH-UP-002', 'LH-GW-002', 'LH-GW-003', 'LH-GW-004', 'LH-ST-001', 'LH-ST-002', 'LH-UI-001')
-            AND agent_count_bucket = '-') OR
-          (event_type = 'previous_exit' AND value IN ('clean', 'unclean')
-            AND agent_count_bucket = '-')
-        ),
-        PRIMARY KEY (
-          bucket_start, event_type, desktop_version, openclaw_version,
-          platform, architecture, value, agent_count_bucket
-        )
-      );
-      CREATE TABLE IF NOT EXISTS model_request_hourly (
-        bucket_start TIMESTAMPTZ NOT NULL,
-        api_type TEXT NOT NULL CHECK (api_type IN ('openai-completions', 'openai-responses')),
-        outcome TEXT NOT NULL CHECK (outcome IN ('success', 'upstream_rejected', 'network_error', 'timeout')),
-        latency_bucket TEXT NOT NULL CHECK (latency_bucket IN ('lt_1s', '1_to_3s', '3_to_10s', '10_to_30s', 'gte_30s')),
-        count BIGINT NOT NULL CHECK (count > 0),
-        PRIMARY KEY (bucket_start, api_type, outcome, latency_bucket)
-      );
-      CREATE TABLE IF NOT EXISTS model_usage_aggregate (
-        period_start DATE NOT NULL,
-        period TEXT NOT NULL CHECK (period IN ('day', 'month')),
-        tenant_id TEXT NOT NULL,
-        device_id TEXT NOT NULL,
-        config_id TEXT NOT NULL,
-        request_count BIGINT NOT NULL,
-        success_count BIGINT NOT NULL,
-        error_count BIGINT NOT NULL,
-        input_tokens BIGINT NOT NULL,
-        output_tokens BIGINT NOT NULL,
-        cache_tokens BIGINT NOT NULL,
-        estimated_tokens BIGINT NOT NULL,
-        cost_microunits BIGINT NOT NULL,
-        PRIMARY KEY (period_start, period, tenant_id, device_id, config_id)
-      );
-      CREATE TABLE IF NOT EXISTS knowledge_document (
-        document_id TEXT PRIMARY KEY,
-        tenant_id TEXT NOT NULL,
-        title TEXT NOT NULL,
-        source_label TEXT NOT NULL,
-        content TEXT NOT NULL,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-        CONSTRAINT knowledge_document_content_encrypted CHECK (left(content, 14) = 'longhub-kb-v1:')
-      );
-      CREATE INDEX IF NOT EXISTS idx_knowledge_document_tenant ON knowledge_document(tenant_id, created_at DESC);
-      DO $$
-      BEGIN
-        IF NOT EXISTS (
-          SELECT 1 FROM pg_constraint
-          WHERE conname = 'knowledge_document_content_encrypted'
-            AND conrelid = 'knowledge_document'::regclass
-        ) THEN
-          ALTER TABLE knowledge_document
-            ADD CONSTRAINT knowledge_document_content_encrypted
-            CHECK (left(content, 14) = 'longhub-kb-v1:') NOT VALID;
-        END IF;
-      END $$;
-      ALTER TABLE knowledge_document VALIDATE CONSTRAINT knowledge_document_content_encrypted;
-      CREATE TABLE IF NOT EXISTS pack_review (review_id TEXT PRIMARY KEY, publisher TEXT NOT NULL, pack JSONB NOT NULL,
-        status TEXT NOT NULL, findings JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL);
-    `);
+    await this.assertCleanLaunchSchema();
+    return;
+  }
+  async findTaskByIdempotency(
+    idempotencyKey: string,
+    owner: CloudTaskOwner,
+  ): Promise<CloudTaskIdempotencyBinding | undefined> {
+    const existing = await this.pool.query<TaskRow>(
+      `SELECT * FROM cloud_task
+       WHERE tenant_id = $1 AND device_id = $2 AND agent_id = $3 AND idempotency_key = $4`,
+      [owner.tenant_id, owner.device_id, owner.agent_id, idempotencyKey],
+    );
+    const row = existing.rows[0];
+    if (!row) return undefined;
+    return {
+      task: toTask(row),
+      request_fingerprint: row.request_fingerprint,
+    };
   }
 
-  async createTask(idempotencyKey: string, kind: string, input: unknown): Promise<{ task: CloudTask; existed: boolean }> {
+  async createTask(
+    idempotencyKey: string,
+    kind: string,
+    input: unknown,
+    owner?: CloudTaskOwner,
+    requestFingerprint?: string,
+  ): Promise<{ task: CloudTask; existed: boolean }> {
+    if (!owner) throw cleanLaunchUnsupported("task.owner_required");
+    if (!requestFingerprint) throw cleanLaunchUnsupported("task.request_fingerprint_required");
+    const normalizedFingerprint = normalizeCloudTaskRequestFingerprint(requestFingerprint);
     const taskId = `ct-${randomUUID()}`;
     const inserted = await this.pool.query<TaskRow>(
-      `INSERT INTO cloud_task (task_id, idempotency_key, kind, status, input)
-       VALUES ($1, $2, $3, 'pending', $4)
-       ON CONFLICT (idempotency_key) DO NOTHING
+      `INSERT INTO cloud_task (task_id, tenant_id, device_id, agent_id, idempotency_key, kind, request_fingerprint, status, input)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', $8)
+       ON CONFLICT (tenant_id, device_id, agent_id, idempotency_key) DO NOTHING
        RETURNING *`,
-      [taskId, idempotencyKey, kind, JSON.stringify(input)],
+      [
+        taskId,
+        owner.tenant_id,
+        owner.device_id,
+        owner.agent_id,
+        idempotencyKey,
+        kind,
+        normalizedFingerprint,
+        JSON.stringify(input),
+      ],
     );
     if (inserted.rowCount === 0) {
-      const existing = await this.pool.query<TaskRow>(
-        `SELECT * FROM cloud_task WHERE idempotency_key = $1`,
-        [idempotencyKey],
-      );
-      return { task: toTask(existing.rows[0]!), existed: true };
+      const existing = await this.findTaskByIdempotency(idempotencyKey, owner);
+      if (!existing) throw new Error("Task idempotency owner lookup failed");
+      const existingFingerprint = existing.request_fingerprint;
+      // Historical rows have no trustworthy binding and must fail closed;
+      // they cannot be replayed or silently rebound by a new request.
+      if (existingFingerprint === LEGACY_UNBOUND_TASK_REQUEST_FINGERPRINT || existingFingerprint !== normalizedFingerprint) {
+        throw new CloudTaskIdempotencyConflictError();
+      }
+      return { task: existing.task, existed: true };
     }
     await this.appendEvent(taskId, "task.accepted");
     return { task: toTask(inserted.rows[0]!), existed: false };
@@ -717,6 +1003,79 @@ export class PgStore implements CloudStore {
   async getTask(taskId: string): Promise<CloudTask | undefined> {
     const res = await this.pool.query<TaskRow>(`SELECT * FROM cloud_task WHERE task_id = $1`, [taskId]);
     return res.rows[0] ? toTask(res.rows[0]) : undefined;
+  }
+
+  async discardPendingTask(taskId: string, placeholder: CloudTaskAdmissionPlaceholder): Promise<boolean> {
+    if (!isCloudTaskAdmissionPlaceholder(placeholder)) return false;
+    const result = await this.pool.query(
+      `DELETE FROM cloud_task
+        WHERE task_id = $1 AND status = 'pending' AND input = $2::jsonb
+        RETURNING task_id`,
+      [taskId, JSON.stringify(placeholder)],
+    );
+    return result.rowCount === 1;
+  }
+
+  async admitPendingTaskInput(
+    taskId: string,
+    placeholder: CloudTaskAdmissionPlaceholder,
+    input: unknown,
+  ): Promise<CloudTask | undefined> {
+    if (!isCloudTaskAdmissionPlaceholder(placeholder)) return undefined;
+    const result = await this.pool.query<TaskRow>(
+      `UPDATE cloud_task
+          SET input = $3::jsonb, updated_at = now()
+        WHERE task_id = $1 AND status = 'pending' AND input = $2::jsonb
+        RETURNING *`,
+      [taskId, JSON.stringify(placeholder), JSON.stringify(input)],
+    );
+    return result.rows[0] ? toTask(result.rows[0]) : undefined;
+  }
+
+  async claimPendingTask(taskId: string): Promise<CloudTask | undefined> {
+    // The status predicate is the database CAS boundary. A concurrent cancel
+    // either wins first (zero rows, so the worker exits) or observes running;
+    // it can never be overwritten by an unconditional transition.
+    const res = await this.pool.query<TaskRow>(
+      `UPDATE cloud_task
+       SET status = 'running', updated_at = now()
+       WHERE task_id = $1 AND status = 'pending'
+       RETURNING *`,
+      [taskId],
+    );
+    if (res.rowCount === 0) return undefined;
+    const task = toTask(res.rows[0]!);
+    await this.appendEvent(taskId, TASK_EVENT_TYPE.running);
+    return task;
+  }
+
+  async transitionIfStatus(
+    taskId: string,
+    expectedStatuses: readonly CloudTaskStatus[],
+    status: CloudTaskStatus,
+    patch?: Partial<CloudTask>,
+  ): Promise<CloudTask | undefined> {
+    if (expectedStatuses.length === 0) return undefined;
+    const res = await this.pool.query<TaskRow>(
+      `UPDATE cloud_task
+       SET status = $3,
+           output = COALESCE($4, output),
+           error = COALESCE($5, error),
+           updated_at = now()
+       WHERE task_id = $1 AND status = ANY($2::text[])
+       RETURNING *`,
+      [
+        taskId,
+        expectedStatuses,
+        status,
+        patch?.output !== undefined ? JSON.stringify(patch.output) : null,
+        patch?.error !== undefined ? JSON.stringify(patch.error) : null,
+      ],
+    );
+    if (res.rowCount === 0) return undefined;
+    const task = toTask(res.rows[0]!);
+    await this.appendEvent(taskId, TASK_EVENT_TYPE[status], task.error ? { error: task.error } : undefined);
+    return task;
   }
 
   async transition(taskId: string, status: CloudTaskStatus, patch?: Partial<CloudTask>): Promise<CloudTask> {
@@ -773,8 +1132,10 @@ export class PgStore implements CloudStore {
       [params.tenant_id, params.device_fingerprint],
     );
     if (existing.rows[0]) return { device: toDevice(existing.rows[0]), existed: true };
-    const res = await this.pool.query<DeviceRow>(
-      `INSERT INTO device (device_id, tenant_id, platform, app_version, device_fingerprint, display_name, device_token)
+    const clearToken = `dt-${randomUUID()}${randomUUID()}`;
+    try {
+      const res = await this.pool.query<DeviceRow>(
+      `INSERT INTO device (device_id, tenant_id, platform, app_version, device_fingerprint, display_name, device_token_hash)
        VALUES ($1, $2, $3, $4, $5, $6, $7)
        RETURNING *`,
       [
@@ -784,10 +1145,133 @@ export class PgStore implements CloudStore {
         params.app_version,
         params.device_fingerprint,
         params.display_name ?? null,
-        `dt-${randomUUID()}${randomUUID()}`,
+        hashDeviceToken(clearToken),
       ],
-    );
-    return { device: toDevice(res.rows[0]!), existed: false };
+      );
+      return { device: toDevice(res.rows[0]!, clearToken), existed: false };
+    } catch (error) {
+      // The partial fingerprint index is the race boundary.  Never return a
+      // credential from the row that won the race.
+      if ((error as { code?: string }).code === "23505") {
+        const raced = await this.pool.query<DeviceRow>(
+          `SELECT * FROM device WHERE tenant_id=$1 AND device_fingerprint=$2 AND status='active'`,
+          [params.tenant_id, params.device_fingerprint],
+        );
+        if (raced.rows[0]) return { device: toDevice(raced.rows[0]), existed: true };
+      }
+      throw error;
+    }
+  }
+
+  async createDevicePairingChallenge(params: {
+    challenge_id: string;
+    device_id: string;
+    code_hash: string;
+    expires_at: string;
+    now?: string;
+  }): Promise<DevicePairingChallengeRecord | undefined> {
+    const now = params.now ?? new Date().toISOString();
+    const nowDate = new Date(now);
+    const expiresDate = new Date(params.expires_at);
+    if (!Number.isFinite(nowDate.getTime()) || !Number.isFinite(expiresDate.getTime()) || expiresDate <= nowDate) {
+      return undefined;
+    }
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const deviceResult = await client.query<DeviceRow>(
+        `SELECT * FROM device WHERE device_id=$1 FOR UPDATE`, [params.device_id],
+      );
+      const device = deviceResult.rows[0];
+      if (!device || device.status !== "active" || device.user_id !== null) {
+        await client.query("ROLLBACK");
+        return undefined;
+      }
+      // A device has at most one redeemable proof.  Reissuing invalidates the
+      // previous digest while the device row lock serializes concurrent calls.
+      await client.query(
+        `DELETE FROM device_pairing_challenge
+          WHERE device_id=$1 AND consumed_at IS NULL`, [params.device_id],
+      );
+      const inserted = await client.query<DevicePairingChallengeRow>(
+        `INSERT INTO device_pairing_challenge
+           (challenge_id,device_id,tenant_id,code_hash,expires_at,created_at)
+         VALUES($1,$2,$3,$4,$5,$6) RETURNING *`,
+        [params.challenge_id, device.device_id, device.tenant_id, params.code_hash, expiresDate.toISOString(), nowDate.toISOString()],
+      );
+      await client.query("COMMIT");
+      return inserted.rows[0] ? toDevicePairingChallenge(inserted.rows[0]) : undefined;
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async consumeDevicePairingChallenge(params: {
+    code_hash: string;
+    user_id: string;
+    now?: string;
+  }): Promise<DevicePairingConsumeResult> {
+    const now = params.now ?? new Date().toISOString();
+    const nowDate = new Date(now);
+    if (!Number.isFinite(nowDate.getTime())) return { ok: false, reason: "CODE_INVALID" };
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const challengeResult = await client.query<DevicePairingChallengeRow>(
+        `SELECT * FROM device_pairing_challenge WHERE code_hash=$1 FOR UPDATE`, [params.code_hash],
+      );
+      const challenge = challengeResult.rows[0];
+      if (!challenge || challenge.consumed_at !== null) {
+        await client.query("ROLLBACK");
+        return { ok: false, reason: "CODE_INVALID" };
+      }
+      if (new Date(challenge.expires_at) <= nowDate) {
+        await client.query(`DELETE FROM device_pairing_challenge WHERE challenge_id=$1`, [challenge.challenge_id]);
+        await client.query("COMMIT");
+        return { ok: false, reason: "CODE_EXPIRED" };
+      }
+      const deviceResult = await client.query<DeviceRow>(
+        `SELECT * FROM device WHERE device_id=$1 FOR UPDATE`, [challenge.device_id],
+      );
+      const device = deviceResult.rows[0];
+      if (!device) {
+        await client.query(`DELETE FROM device_pairing_challenge WHERE challenge_id=$1`, [challenge.challenge_id]);
+        await client.query("COMMIT");
+        return { ok: false, reason: "DEVICE_NOT_FOUND" };
+      }
+      if (device.status !== "active") {
+        await client.query("COMMIT");
+        return { ok: false, reason: "DEVICE_REVOKED" };
+      }
+      if (device.user_id !== null) {
+        await client.query("COMMIT");
+        return { ok: false, reason: "DEVICE_ALREADY_BOUND" };
+      }
+      const updatedDevice = await client.query<DeviceRow>(
+        `UPDATE device SET user_id=$2 WHERE device_id=$1 RETURNING *`, [device.device_id, params.user_id],
+      );
+      await client.query(
+        `UPDATE device_pairing_challenge SET consumed_at=$2 WHERE challenge_id=$1`,
+        [challenge.challenge_id, nowDate.toISOString()],
+      );
+      await client.query(
+        `DELETE FROM device_pairing_challenge
+          WHERE device_id=$1 AND challenge_id<>$2 AND consumed_at IS NULL`,
+        [device.device_id, challenge.challenge_id],
+      );
+      await client.query("COMMIT");
+      return updatedDevice.rows[0]
+        ? { ok: true, device: toDevice(updatedDevice.rows[0]) }
+        : { ok: false, reason: "DEVICE_NOT_FOUND" };
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async getDevice(deviceId: string): Promise<DeviceRecord | undefined> {
@@ -796,7 +1280,11 @@ export class PgStore implements CloudStore {
   }
 
   async findDeviceByToken(token: string): Promise<DeviceRecord | undefined> {
-    const res = await this.pool.query<DeviceRow>(`SELECT * FROM device WHERE device_token = $1`, [token]);
+    const res = await this.pool.query<DeviceRow>(`SELECT * FROM device WHERE device_token_hash = $1`, [hashDeviceToken(token)]);
+    // Authentication only needs the device's non-secret metadata.  The clear
+    // bearer is never reconstructed into a DeviceRecord after the hash lookup;
+    // registration and explicit admin rotation are the only responses that
+    // carry a freshly issued token.
     return res.rows[0] ? toDevice(res.rows[0]) : undefined;
   }
 
@@ -804,7 +1292,7 @@ export class PgStore implements CloudStore {
     const res = userId
       ? await this.pool.query<DeviceRow>(`SELECT * FROM device WHERE user_id = $1 ORDER BY created_at`, [userId])
       : await this.pool.query<DeviceRow>(`SELECT * FROM device ORDER BY created_at`);
-    return res.rows.map(toDevice);
+    return res.rows.map((row) => toDevice(row));
   }
 
   async bindDevice(deviceId: string, userId: string): Promise<DeviceRecord | undefined> {
@@ -815,20 +1303,32 @@ export class PgStore implements CloudStore {
     return res.rows[0] ? toDevice(res.rows[0]) : undefined;
   }
 
-  async updateDeviceOperations(deviceId: string, patch: Partial<Pick<DeviceRecord, "status" | "last_seen_at" | "last_model_success_at" | "last_error_code" | "credential_rotated_at" | "min_required_version" | "rollout_group" | "device_token">>): Promise<DeviceRecord | undefined> {
-    const current = await this.getDevice(deviceId);
-    if (!current) return undefined;
-    const next = { ...current, ...patch };
+  async updateDeviceVersion(deviceId: string, appVersion: string): Promise<DeviceRecord | undefined> {
     const result = await this.pool.query<DeviceRow>(
-      `UPDATE device SET status=$2, last_seen_at=$3, last_model_success_at=$4, last_error_code=$5,
-       credential_rotated_at=$6, min_required_version=$7, rollout_group=$8, device_token=$9
-       WHERE device_id=$1 RETURNING *`,
-      [deviceId, next.status, next.last_seen_at ?? null, next.last_model_success_at ?? null, next.last_error_code ?? null,
-        next.credential_rotated_at ?? null, next.min_required_version ?? null, next.rollout_group ?? null, next.device_token],
+      `UPDATE device SET app_version = $2 WHERE device_id = $1 RETURNING *`,
+      [deviceId, appVersion],
     );
     return result.rows[0] ? toDevice(result.rows[0]) : undefined;
   }
 
+  async updateDeviceOperations(deviceId: string, patch: Partial<Pick<DeviceRecord, "status" | "last_seen_at" | "last_model_success_at" | "last_error_code" | "credential_rotated_at" | "min_required_version" | "rollout_group" | "device_token">>): Promise<DeviceRecord | undefined> {
+    const current = await this.getDevice(deviceId);
+    if (!current) return undefined;
+    const next = { ...current, ...patch };
+    const clearToken = patch.device_token;
+    const result = await this.pool.query<DeviceRow>(
+      `UPDATE device SET status=$2, last_seen_at=$3, last_model_success_at=$4, last_error_code=$5,
+       credential_rotated_at=$6, min_required_version=$7, rollout_group=$8,
+       device_token_hash=COALESCE($9, device_token_hash)
+       WHERE device_id=$1 RETURNING *`,
+      [deviceId, next.status, next.last_seen_at ?? null, next.last_model_success_at ?? null, next.last_error_code ?? null,
+        next.credential_rotated_at ?? null, next.min_required_version ?? null, next.rollout_group ?? null,
+        clearToken === undefined ? null : hashDeviceToken(clearToken)],
+    );
+    return result.rows[0] ? toDevice(result.rows[0], clearToken) : undefined;
+  }
+
+  /** Activation codes are retired from the clean-launch schema. */
   async createActivationCode(params: {
     tenant_id: string;
     code_hash: string;
@@ -838,44 +1338,22 @@ export class PgStore implements CloudStore {
     pack_ids: string[];
     expires_at: string;
   }): Promise<ActivationCodeRecord> {
-    const res = await this.pool.query<ActivationCodeRow>(
-      `INSERT INTO activation_code
-         (activation_code_id, tenant_id, code_hash, code_hint, label, max_uses, pack_ids, expires_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-       RETURNING *`,
-      [
-        `act-${randomUUID()}`,
-        params.tenant_id,
-        params.code_hash,
-        params.code_hint,
-        params.label ?? null,
-        params.max_uses,
-        JSON.stringify(params.pack_ids),
-        params.expires_at,
-      ],
-    );
-    return toActivationCode(res.rows[0]!);
+    void params;
+    throw cleanLaunchUnsupported("activation.create");
   }
 
   async getActivationCode(activationCodeId: string): Promise<ActivationCodeRecord | undefined> {
-    const res = await this.pool.query<ActivationCodeRow>(
-      `SELECT * FROM activation_code WHERE activation_code_id = $1`,
-      [activationCodeId],
-    );
-    return res.rows[0] ? toActivationCode(res.rows[0]) : undefined;
+    void activationCodeId;
+    throw cleanLaunchUnsupported("activation.get");
   }
 
   async listActivationCodes(): Promise<ActivationCodeRecord[]> {
-    const res = await this.pool.query<ActivationCodeRow>(`SELECT * FROM activation_code ORDER BY created_at DESC`);
-    return res.rows.map(toActivationCode);
+    throw cleanLaunchUnsupported("activation.list");
   }
 
   async revokeActivationCode(activationCodeId: string): Promise<ActivationCodeRecord | undefined> {
-    const res = await this.pool.query<ActivationCodeRow>(
-      `UPDATE activation_code SET status = 'revoked' WHERE activation_code_id = $1 RETURNING *`,
-      [activationCodeId],
-    );
-    return res.rows[0] ? toActivationCode(res.rows[0]) : undefined;
+    void activationCodeId;
+    throw cleanLaunchUnsupported("activation.revoke");
   }
 
   async redeemActivationCode(params: {
@@ -883,80 +1361,9 @@ export class PgStore implements CloudStore {
     code_hash: string;
     now: string;
   }): Promise<ActivationRedemptionResult> {
-    const client = await this.pool.connect();
-    try {
-      await client.query("BEGIN");
-      const deviceResult = await client.query<DeviceRow>(
-        `SELECT * FROM device WHERE device_id = $1 FOR UPDATE`,
-        [params.device_id],
-      );
-      const deviceRow = deviceResult.rows[0];
-      if (!deviceRow) {
-        await client.query("ROLLBACK");
-        return { ok: false, reason: "DEVICE_NOT_FOUND" };
-      }
-      const codeResult = await client.query<ActivationCodeRow>(
-        `SELECT * FROM activation_code WHERE code_hash = $1 FOR UPDATE`,
-        [params.code_hash],
-      );
-      const codeRow = codeResult.rows[0];
-      if (
-        !codeRow || codeRow.tenant_id !== deviceRow.tenant_id || codeRow.status !== "active" ||
-        new Date(codeRow.expires_at).toISOString() <= params.now
-      ) {
-        await client.query("ROLLBACK");
-        return { ok: false, reason: "CODE_UNAVAILABLE" };
-      }
-      if (deviceRow.activation_code_id === codeRow.activation_code_id) {
-        await client.query("COMMIT");
-        return { ok: true, code: toActivationCode(codeRow), device: toDevice(deviceRow), alreadyActivated: true };
-      }
-      if (Number(codeRow.use_count) >= Number(codeRow.max_uses)) {
-        await client.query("ROLLBACK");
-        return { ok: false, reason: "CODE_UNAVAILABLE" };
-      }
-      const updatedCode = await client.query<ActivationCodeRow>(
-        `UPDATE activation_code SET use_count = use_count + 1 WHERE activation_code_id = $1 RETURNING *`,
-        [codeRow.activation_code_id],
-      );
-      const updatedDevice = await client.query<DeviceRow>(
-        `UPDATE device SET activation_code_id = $2, activated_at = $3 WHERE device_id = $1 RETURNING *`,
-        [deviceRow.device_id, codeRow.activation_code_id, params.now],
-      );
-      if (deviceRow.activation_code_id) {
-        await client.query(
-          `UPDATE entitlement SET status = 'revoked'
-           WHERE device_id = $1 AND source_activation_code_id = $2 AND status = 'active'`,
-          [deviceRow.device_id, deviceRow.activation_code_id],
-        );
-      }
-      for (const packId of codeRow.pack_ids) {
-        await client.query(
-          `INSERT INTO entitlement
-             (entitlement_id, tenant_id, device_id, pack_id, scope, expires_at, source_activation_code_id)
-           SELECT $1, $2, $3, $4, 'device', $5, $7
-           WHERE NOT EXISTS (
-             SELECT 1 FROM entitlement
-             WHERE device_id = $3 AND pack_id = $4 AND status = 'active' AND expires_at > $6
-           )`,
-          [`ent-${randomUUID()}`, deviceRow.tenant_id, deviceRow.device_id, packId, codeRow.expires_at, params.now, codeRow.activation_code_id],
-        );
-      }
-      await client.query("COMMIT");
-      return {
-        ok: true,
-        code: toActivationCode(updatedCode.rows[0]!),
-        device: toDevice(updatedDevice.rows[0]!),
-        alreadyActivated: false,
-      };
-    } catch (error) {
-      await client.query("ROLLBACK").catch(() => undefined);
-      throw error;
-    } finally {
-      client.release();
-    }
+    void params;
+    throw cleanLaunchUnsupported("activation.redeem");
   }
-
   async createUser(params: { email: string; password_hash: string }): Promise<{ user: UserRecord; existed: boolean }> {
     const inserted = await this.pool.query<UserRow>(
       `INSERT INTO account_user (user_id, email, password_hash)
@@ -1002,23 +1409,23 @@ export class PgStore implements CloudStore {
     expires_at: string;
   }): Promise<SessionRecord> {
     const res = await this.pool.query<SessionRow>(
-      `INSERT INTO auth_session (token, subject_type, subject_id, expires_at)
+      `INSERT INTO auth_session (token_hash, subject_type, subject_id, expires_at)
        VALUES ($1, $2, $3, $4) RETURNING *`,
-      [params.token, params.subject_type, params.subject_id, params.expires_at],
+      [hashSessionToken(params.token), params.subject_type, params.subject_id, params.expires_at],
     );
-    return toSession(res.rows[0]!);
+    return toSession(res.rows[0]!, params.token);
   }
 
   async getSession(token: string): Promise<SessionRecord | undefined> {
     const res = await this.pool.query<SessionRow>(
-      `SELECT * FROM auth_session WHERE token = $1 AND expires_at > now()`,
-      [token],
+      `SELECT * FROM auth_session WHERE token_hash = $1 AND expires_at > now()`,
+      [hashSessionToken(token)],
     );
-    return res.rows[0] ? toSession(res.rows[0]) : undefined;
+    return res.rows[0] ? toSession(res.rows[0], token) : undefined;
   }
 
   async deleteSession(token: string): Promise<void> {
-    await this.pool.query(`DELETE FROM auth_session WHERE token = $1`, [token]);
+    await this.pool.query(`DELETE FROM auth_session WHERE token_hash = $1`, [hashSessionToken(token)]);
   }
 
   async createAdmin(params: {
@@ -1065,6 +1472,7 @@ export class PgStore implements CloudStore {
     return res.rows.map(toAudit);
   }
 
+  /** Catalog products are a retired Pack surface in clean launch. */
   async createProduct(params: {
     pack_id: string;
     name: string;
@@ -1073,74 +1481,54 @@ export class PgStore implements CloudStore {
     price_yearly_fen: number;
     status?: "listed" | "unlisted";
   }): Promise<ProductRecord> {
-    const res = await this.pool.query<ProductRow>(
-      `INSERT INTO product (product_id, pack_id, name, description, price_monthly_fen, price_yearly_fen, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
-      [
-        `prd-${randomUUID()}`,
-        params.pack_id,
-        params.name,
-        params.description,
-        params.price_monthly_fen,
-        params.price_yearly_fen,
-        params.status ?? "listed",
-      ],
-    );
-    return toProduct(res.rows[0]!);
+    void params;
+    throw cleanLaunchUnsupported("product.create");
   }
 
   async updateProduct(
     productId: string,
     patch: Partial<Pick<ProductRecord, "name" | "description" | "price_monthly_fen" | "price_yearly_fen" | "status">>,
   ): Promise<ProductRecord | undefined> {
-    const res = await this.pool.query<ProductRow>(
-      `UPDATE product SET
-         name = COALESCE($2, name),
-         description = COALESCE($3, description),
-         price_monthly_fen = COALESCE($4, price_monthly_fen),
-         price_yearly_fen = COALESCE($5, price_yearly_fen),
-         status = COALESCE($6, status)
-       WHERE product_id = $1 RETURNING *`,
-      [
-        productId,
-        patch.name ?? null,
-        patch.description ?? null,
-        patch.price_monthly_fen ?? null,
-        patch.price_yearly_fen ?? null,
-        patch.status ?? null,
-      ],
-    );
-    return res.rows[0] ? toProduct(res.rows[0]) : undefined;
+    void productId;
+    void patch;
+    throw cleanLaunchUnsupported("product.update");
   }
 
   async getProduct(productId: string): Promise<ProductRecord | undefined> {
-    const res = await this.pool.query<ProductRow>(`SELECT * FROM product WHERE product_id = $1`, [productId]);
-    return res.rows[0] ? toProduct(res.rows[0]) : undefined;
+    void productId;
+    throw cleanLaunchUnsupported("product.get");
   }
 
   async listProducts(): Promise<ProductRecord[]> {
-    const res = await this.pool.query<ProductRow>(`SELECT * FROM product ORDER BY created_at`);
-    return res.rows.map(toProduct);
+    throw cleanLaunchUnsupported("product.list");
   }
 
   async createOrder(params: {
     user_id: string;
-    type: "plan" | "recharge";
+    type: "plan" | "cloud_skill_plan" | "recharge";
     product_id?: string;
     pack_id?: string;
+    plan_id?: string;
+    tenant_id?: string;
     period?: "monthly" | "yearly";
     amount_fen: number;
   }): Promise<OrderRecord> {
+    if (params.type !== "cloud_skill_plan" || !params.plan_id || !params.tenant_id || !params.period ||
+      params.product_id !== undefined || params.pack_id !== undefined) {
+      throw cleanLaunchUnsupported("billing.order_legacy_type");
+    }
     const res = await this.pool.query<OrderRow>(
-      `INSERT INTO billing_order (order_id, user_id, type, product_id, pack_id, period, amount_fen)
-       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+      `INSERT INTO billing_order
+         (order_id, user_id, type, plan_id, tenant_id, period, amount_fen, pay_method)
+       VALUES ($1, $2, 'cloud_skill_plan', $3, $4, $5, $6, NULL)
+       RETURNING order_id, user_id, type, plan_id, tenant_id, period, amount_fen, status,
+                 pay_method, provider_payment_id, created_at, paid_at, refunded_at`,
       [
         `ord-${randomUUID()}`,
         params.user_id,
-        params.type,
-        params.product_id ?? null,
-        params.pack_id ?? null,
-        params.period ?? null,
+        params.plan_id,
+        params.tenant_id,
+        params.period,
         params.amount_fen,
       ],
     );
@@ -1148,34 +1536,391 @@ export class PgStore implements CloudStore {
   }
 
   async getOrder(orderId: string): Promise<OrderRecord | undefined> {
-    const res = await this.pool.query<OrderRow>(`SELECT * FROM billing_order WHERE order_id = $1`, [orderId]);
+    const res = await this.pool.query<OrderRow>(
+      `SELECT order_id, user_id, type, plan_id, tenant_id, period, amount_fen, status,
+              pay_method, provider_payment_id, created_at, paid_at, refunded_at
+         FROM billing_order WHERE order_id = $1 AND type = 'cloud_skill_plan'`, [orderId],
+    );
     return res.rows[0] ? toOrder(res.rows[0]) : undefined;
   }
 
   async updateOrder(
     orderId: string,
-    patch: Partial<Pick<OrderRecord, "status" | "pay_method" | "paid_at">>,
+    patch: Partial<Pick<OrderRecord, "status" | "pay_method" | "paid_at" | "refunded_at">>,
   ): Promise<OrderRecord | undefined> {
+    const paymentMethod = (patch as { pay_method?: string | null }).pay_method;
+    if (paymentMethod !== undefined && paymentMethod !== null && paymentMethod !== "provider") {
+      throw cleanLaunchUnsupported("billing.payment_method");
+    }
     const res = await this.pool.query<OrderRow>(
       `UPDATE billing_order SET
          status = COALESCE($2, status),
          pay_method = COALESCE($3, pay_method),
-         paid_at = COALESCE($4, paid_at)
-       WHERE order_id = $1 RETURNING *`,
-      [orderId, patch.status ?? null, patch.pay_method ?? null, patch.paid_at ?? null],
+         paid_at = COALESCE($4, paid_at),
+         refunded_at = COALESCE($5, refunded_at)
+       WHERE order_id = $1 AND type = 'cloud_skill_plan'
+       RETURNING order_id, user_id, type, plan_id, tenant_id, period, amount_fen, status,
+                 pay_method, provider_payment_id, created_at, paid_at, refunded_at`,
+      [orderId, patch.status ?? null, paymentMethod ?? null, patch.paid_at ?? null, patch.refunded_at ?? null],
     );
     return res.rows[0] ? toOrder(res.rows[0]) : undefined;
   }
 
   async listOrders(userId?: string): Promise<OrderRecord[]> {
     const res = userId
-      ? await this.pool.query<OrderRow>(`SELECT * FROM billing_order WHERE user_id = $1 ORDER BY created_at DESC`, [
+      ? await this.pool.query<OrderRow>(`SELECT order_id, user_id, type, plan_id, tenant_id, period, amount_fen, status,
+          pay_method, provider_payment_id, created_at, paid_at, refunded_at
+          FROM billing_order WHERE user_id = $1 AND type = 'cloud_skill_plan' ORDER BY created_at DESC`, [
           userId,
         ])
-      : await this.pool.query<OrderRow>(`SELECT * FROM billing_order ORDER BY created_at DESC`);
+      : await this.pool.query<OrderRow>(`SELECT order_id, user_id, type, plan_id, tenant_id, period, amount_fen, status,
+          pay_method, provider_payment_id, created_at, paid_at, refunded_at
+          FROM billing_order WHERE type = 'cloud_skill_plan' ORDER BY created_at DESC`);
     return res.rows.map(toOrder);
   }
 
+  private async loadProviderSettlementResult(
+    client: pg.PoolClient,
+    settlementRow: BillingSettlementRow,
+    replayed: boolean,
+  ): Promise<BillingSettlementResult> {
+    const orderResult = await client.query<OrderRow>(
+      `SELECT order_id, user_id, type, plan_id, tenant_id, period, amount_fen, status,
+              pay_method, provider_payment_id, created_at, paid_at, refunded_at
+         FROM billing_order WHERE order_id=$1`,
+      [settlementRow.order_id],
+    );
+    const outboxResult = await client.query<BillingOutboxRow>(
+      `SELECT * FROM billing_outbox WHERE settlement_id=$1 ORDER BY created_at, outbox_id`,
+      [settlementRow.settlement_id],
+    );
+    if (!orderResult.rows[0] || outboxResult.rows.length !== 1) {
+      throw new BillingSettlementError("REFUND_REQUIRES_RECONCILIATION");
+    }
+    const subscriptionResult = await client.query<CloudSkillSubscriptionRow>(
+      `SELECT * FROM cloud_skill_subscription WHERE source_order_id=$1`,
+      [settlementRow.order_id],
+    );
+    const subscription = subscriptionResult.rows[0];
+    const entitlementResult = subscription
+      ? await client.query<CloudSkillEntitlementRow>(
+          `SELECT * FROM cloud_skill_entitlement WHERE subscription_id=$1 ORDER BY skill_id`,
+          [subscription.subscription_id],
+        )
+      : { rows: [] as CloudSkillEntitlementRow[] };
+    return {
+      replayed,
+      settlement: toBillingSettlement(settlementRow),
+      order: toOrder(orderResult.rows[0]),
+      ...(subscription ? { subscription: toCloudSkillSubscription(subscription) } : {}),
+      ...(entitlementResult.rows.length > 0
+        ? { cloud_skill_entitlements: entitlementResult.rows.map(toCloudSkillEntitlement) }
+        : {}),
+      outbox: toBillingOutbox(outboxResult.rows[0]!),
+    };
+  }
+
+  private async findProviderSettlementReplay(
+    client: pg.PoolClient,
+    operation: "payment" | "refund",
+    orderId: string,
+    idempotencyKey: string,
+    requestHash: string,
+    providerReference: string,
+  ): Promise<BillingSettlementResult | undefined> {
+    const existing = await client.query<BillingSettlementRow>(
+      `SELECT * FROM billing_settlement
+        WHERE (order_id=$1 AND operation=$2) OR (operation=$2 AND idempotency_key=$3)
+        ORDER BY settlement_id
+        FOR UPDATE`,
+      [orderId, operation, idempotencyKey],
+    );
+    if (existing.rows.length === 0) return undefined;
+    if (existing.rows.length !== 1) throw new BillingSettlementError("IDEMPOTENCY_CONFLICT");
+    const row = existing.rows[0]!;
+    if (row.order_id !== orderId || row.operation !== operation || row.idempotency_key !== idempotencyKey ||
+      row.request_hash !== requestHash || row.method !== "provider" ||
+      row.provider_reference !== providerReference) {
+      throw new BillingSettlementError("IDEMPOTENCY_CONFLICT");
+    }
+    return this.loadProviderSettlementResult(client, row, true);
+  }
+
+  /** Provider facts can enter only through a verified internal adapter. */
+  async settleOrderPayment(params: SettleOrderPaymentParams): Promise<BillingSettlementResult> {
+    if (params.method !== "provider") {
+      throw new BillingSettlementError("SETTLEMENT_UNAVAILABLE", "provider payment adapter is required", 503);
+    }
+    if (!validProviderReference(params.provider_reference) ||
+      !/^[\x21-\x7e]{1,128}$/u.test(params.idempotency_key) ||
+      !/^v1:[a-f0-9]{64}$/u.test(params.request_hash)) {
+      throw new BillingSettlementError("FULFILLMENT_INVALID", "provider settlement identity is invalid", 422);
+    }
+    const paidAt = params.paid_at ?? new Date().toISOString();
+    if (!Number.isFinite(Date.parse(paidAt))) throw new BillingSettlementError("FULFILLMENT_INVALID");
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const orderResult = await client.query<OrderRow>(
+        `SELECT order_id, user_id, type, plan_id, tenant_id, period, amount_fen, status,
+                pay_method, provider_payment_id, created_at, paid_at, refunded_at
+           FROM billing_order WHERE order_id=$1 FOR UPDATE`,
+        [params.order_id],
+      );
+      const order = orderResult.rows[0];
+      if (!order || order.user_id !== params.user_id) throw new BillingSettlementError("ORDER_NOT_FOUND");
+      const replay = await this.findProviderSettlementReplay(
+        client, "payment", params.order_id, params.idempotency_key, params.request_hash,
+        params.provider_reference,
+      );
+      if (replay) {
+        await client.query("COMMIT");
+        return replay;
+      }
+      if (order.status !== "pending") throw new BillingSettlementError("ORDER_NOT_PENDING");
+      if (order.type !== "cloud_skill_plan" || !order.plan_id || !order.tenant_id ||
+        (order.period !== "monthly" && order.period !== "yearly")) {
+        throw new BillingSettlementError("FULFILLMENT_INVALID");
+      }
+      const planSkills = await client.query<{ skill_id: string }>(
+        `SELECT skill_id FROM cloud_skill_plan_skill WHERE plan_id=$1 ORDER BY skill_id`,
+        [order.plan_id],
+      );
+      if (planSkills.rows.length === 0) throw new BillingSettlementError("FULFILLMENT_INVALID");
+
+      const settlementId = `bst-${randomUUID()}`;
+      const settlementResult = await client.query<BillingSettlementRow>(
+        `INSERT INTO billing_settlement
+           (settlement_id,order_id,operation,idempotency_key,request_hash,method,provider_reference,amount_fen)
+         VALUES($1,$2,'payment',$3,$4,'provider',$5,$6) RETURNING *`,
+        [settlementId, order.order_id, params.idempotency_key, params.request_hash,
+          params.provider_reference, order.amount_fen],
+      );
+      await client.query(
+        `UPDATE billing_order SET status='paid', pay_method='provider', provider_payment_id=$2, paid_at=$3
+          WHERE order_id=$1`,
+        [order.order_id, params.provider_reference, paidAt],
+      );
+      const subscriptionId = `csub-${randomUUID()}`;
+      const expiresAt = billingPeriodExpiry(paidAt, order.period);
+      await client.query(
+        `INSERT INTO cloud_skill_subscription
+           (subscription_id,user_id,tenant_id,plan_id,status,period,starts_at,expires_at,source_order_id)
+         VALUES($1,$2,$3,$4,'active',$5,$6,$7,$8)`,
+        [subscriptionId, order.user_id, order.tenant_id, order.plan_id, order.period,
+          paidAt, expiresAt, order.order_id],
+      );
+      for (const { skill_id: skillId } of planSkills.rows) {
+        await client.query(
+          `INSERT INTO cloud_skill_entitlement
+             (entitlement_id,subscription_id,tenant_id,user_id,skill_id,plan_id,status,expires_at)
+           VALUES($1,$2,$3,$4,$5,$6,'active',$7)`,
+          [`csent-${randomUUID()}`, subscriptionId, order.tenant_id, order.user_id,
+            skillId, order.plan_id, expiresAt],
+        );
+      }
+      const payload = {
+        order_id: order.order_id,
+        user_id: order.user_id,
+        tenant_id: order.tenant_id,
+        order_type: order.type,
+        method: "provider",
+        amount_fen: Number(order.amount_fen),
+        provider_reference: params.provider_reference,
+      };
+      await client.query(
+        `INSERT INTO billing_outbox
+           (outbox_id,event_type,aggregate_id,settlement_id,payload)
+         VALUES($1,'billing.payment.settled',$2,$3,$4)`,
+        [`bout-${randomUUID()}`, order.order_id, settlementId, payload],
+      );
+      await client.query(
+        `INSERT INTO audit_log(audit_id,actor,action,detail)
+         VALUES($1,'payment-provider','order.payment.settled',$2)`,
+        [`aud-${randomUUID()}`, { order_id: order.order_id, settlement_id: settlementId }],
+      );
+      const result = await this.loadProviderSettlementResult(client, settlementResult.rows[0]!, false);
+      await client.query("COMMIT");
+      return result;
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      if (error instanceof BillingSettlementError) throw error;
+      if ((error as { code?: string }).code === "23505") {
+        throw new BillingSettlementError("IDEMPOTENCY_CONFLICT");
+      }
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async settleOrderRefund(params: SettleOrderRefundParams): Promise<BillingSettlementResult> {
+    if (!validProviderReference(params.provider_reference) ||
+      !/^[\x21-\x7e]{1,128}$/u.test(params.idempotency_key) ||
+      !/^v1:[a-f0-9]{64}$/u.test(params.request_hash)) {
+      throw new BillingSettlementError("FULFILLMENT_INVALID", "provider refund identity is invalid", 422);
+    }
+    const refundedAt = params.refunded_at ?? new Date().toISOString();
+    if (!Number.isFinite(Date.parse(refundedAt))) throw new BillingSettlementError("FULFILLMENT_INVALID");
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const orderResult = await client.query<OrderRow>(
+        `SELECT order_id, user_id, type, plan_id, tenant_id, period, amount_fen, status,
+                pay_method, provider_payment_id, created_at, paid_at, refunded_at
+           FROM billing_order WHERE order_id=$1 FOR UPDATE`,
+        [params.order_id],
+      );
+      const order = orderResult.rows[0];
+      if (!order) throw new BillingSettlementError("ORDER_NOT_FOUND");
+      const replay = await this.findProviderSettlementReplay(
+        client, "refund", params.order_id, params.idempotency_key, params.request_hash,
+        params.provider_reference,
+      );
+      if (replay) {
+        await client.query("COMMIT");
+        return replay;
+      }
+      if (order.status !== "paid") throw new BillingSettlementError("ORDER_NOT_PAID");
+      if (order.type !== "cloud_skill_plan" || order.pay_method !== "provider" || !order.provider_payment_id) {
+        throw new BillingSettlementError("REFUND_REQUIRES_RECONCILIATION");
+      }
+      const subscriptionResult = await client.query<CloudSkillSubscriptionRow>(
+        `SELECT * FROM cloud_skill_subscription WHERE source_order_id=$1 FOR UPDATE`,
+        [order.order_id],
+      );
+      const subscription = subscriptionResult.rows[0];
+      if (!subscription || subscription.user_id !== order.user_id || subscription.tenant_id !== order.tenant_id ||
+        subscription.plan_id !== order.plan_id || subscription.status === "refunded") {
+        throw new BillingSettlementError("REFUND_REQUIRES_RECONCILIATION");
+      }
+
+      const settlementId = `bst-${randomUUID()}`;
+      const settlementResult = await client.query<BillingSettlementRow>(
+        `INSERT INTO billing_settlement
+           (settlement_id,order_id,operation,idempotency_key,request_hash,method,provider_reference,amount_fen)
+         VALUES($1,$2,'refund',$3,$4,'provider',$5,$6) RETURNING *`,
+        [settlementId, order.order_id, params.idempotency_key, params.request_hash,
+          params.provider_reference, order.amount_fen],
+      );
+      await client.query(`UPDATE billing_order SET status='refunded', refunded_at=$2 WHERE order_id=$1`,
+        [order.order_id, refundedAt]);
+      await client.query(
+        `UPDATE cloud_skill_subscription SET status='refunded', refunded_at=$2
+          WHERE subscription_id=$1`,
+        [subscription.subscription_id, refundedAt],
+      );
+      await client.query(
+        `UPDATE cloud_skill_entitlement SET status='revoked' WHERE subscription_id=$1`,
+        [subscription.subscription_id],
+      );
+      const payload = {
+        order_id: order.order_id,
+        user_id: order.user_id,
+        tenant_id: order.tenant_id,
+        order_type: order.type,
+        amount_fen: Number(order.amount_fen),
+        provider_reference: params.provider_reference,
+        payment_reference: order.provider_payment_id,
+      };
+      await client.query(
+        `INSERT INTO billing_outbox
+           (outbox_id,event_type,aggregate_id,settlement_id,payload)
+         VALUES($1,'billing.refund.settled',$2,$3,$4)`,
+        [`bout-${randomUUID()}`, order.order_id, settlementId, payload],
+      );
+      await client.query(
+        `INSERT INTO audit_log(audit_id,actor,action,detail)
+         VALUES($1,$2,'order.refund.settled',$3)`,
+        [`aud-${randomUUID()}`, params.actor,
+          { order_id: order.order_id, settlement_id: settlementId }],
+      );
+      const result = await this.loadProviderSettlementResult(client, settlementResult.rows[0]!, false);
+      await client.query("COMMIT");
+      return result;
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      if (error instanceof BillingSettlementError) throw error;
+      if ((error as { code?: string }).code === "23505") {
+        throw new BillingSettlementError("IDEMPOTENCY_CONFLICT");
+      }
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async listBillingOutbox(): Promise<BillingOutboxRecord[]> {
+    const result = await this.pool.query<BillingOutboxRow>(
+      `SELECT * FROM billing_outbox ORDER BY created_at, outbox_id`,
+    );
+    return result.rows.map(toBillingOutbox);
+  }
+
+  async claimBillingOutbox(params: BillingOutboxClaimParams = {}): Promise<BillingOutboxRecord[]> {
+    const limit = normalizeBillingOutboxLimit(params.limit);
+    const leaseMs = normalizeBillingOutboxLease(params.lease_ms);
+    const now = parseBillingOutboxTime(params.now);
+    if (limit === undefined || leaseMs === undefined || now === undefined) return [];
+    const lockToken = `bol-${randomUUID()}`;
+    const result = await this.pool.query<BillingOutboxRow>(
+      `WITH claimable AS (
+         SELECT outbox_id
+           FROM billing_outbox
+          WHERE published_at IS NULL
+            AND dead_lettered_at IS NULL
+            AND available_at <= $1
+            AND (locked_until IS NULL OR locked_until <= $1)
+          ORDER BY available_at, created_at, outbox_id
+          FOR UPDATE SKIP LOCKED
+          LIMIT $2
+       )
+       UPDATE billing_outbox AS outbox
+          SET attempts = outbox.attempts + 1,
+              locked_until = $1::timestamptz + ($3::bigint * interval '1 millisecond'),
+              lock_token = $4,
+              last_error = NULL
+         FROM claimable
+        WHERE outbox.outbox_id = claimable.outbox_id
+       RETURNING outbox.*`,
+      [now.toISOString(), limit, leaseMs, lockToken],
+    );
+    return result.rows.map(toBillingOutbox);
+  }
+
+  async completeBillingOutbox(outboxId: string, lockToken: string, publishedAt?: string): Promise<boolean> {
+    const completedAt = parseBillingOutboxTime(publishedAt);
+    if (!completedAt || !validBillingOutboxLockToken(lockToken)) return false;
+    const result = await this.pool.query(
+      `UPDATE billing_outbox
+          SET published_at=$3, locked_until=NULL, lock_token=NULL, last_error=NULL
+        WHERE outbox_id=$1 AND lock_token=$2 AND published_at IS NULL AND dead_lettered_at IS NULL
+          AND locked_until > $3`,
+      [outboxId, lockToken, completedAt.toISOString()],
+    );
+    return result.rowCount === 1;
+  }
+
+  async failBillingOutbox(params: BillingOutboxFailureParams): Promise<boolean> {
+    const failedAt = parseBillingOutboxTime(params.failed_at);
+    const retryAt = parseBillingOutboxTime(params.retry_at);
+    const deadLetteredAt = params.dead_lettered_at === undefined
+      ? undefined
+      : parseBillingOutboxTime(params.dead_lettered_at);
+    if (!failedAt || !retryAt || (params.dead_lettered_at !== undefined && !deadLetteredAt) ||
+      !validBillingOutboxLockToken(params.lock_token) || !validBillingOutboxErrorCode(params.error_code)) return false;
+    const result = await this.pool.query(
+      `UPDATE billing_outbox
+          SET available_at=$3, locked_until=NULL, lock_token=NULL, last_error=$4, dead_lettered_at=$5
+        WHERE outbox_id=$1 AND lock_token=$2 AND published_at IS NULL AND dead_lettered_at IS NULL
+          AND locked_until > $6`,
+      [params.outbox_id, params.lock_token, retryAt.toISOString(), params.error_code,
+        deadLetteredAt?.toISOString() ?? null, failedAt.toISOString()],
+    );
+    return result.rowCount === 1;
+  }
+
+  // Wallet and legacy Pack entitlements are absent from the baseline.
   async addWalletTransaction(params: {
     user_id: string;
     type: "recharge" | "purchase" | "refund" | "adjust";
@@ -1183,92 +1928,856 @@ export class PgStore implements CloudStore {
     order_id?: string;
     remark?: string;
   }): Promise<WalletTransactionRecord> {
+    void params;
+    throw cleanLaunchUnsupported("wallet.adjust");
+  }
+
+  async listTransactions(userId?: string): Promise<WalletTransactionRecord[]> {
+    void userId;
+    throw cleanLaunchUnsupported("wallet.list");
+  }
+
+  async listAllEntitlements(): Promise<EntitlementRecord[]> {
+    throw cleanLaunchUnsupported("entitlement.list");
+  }
+
+  // ===== Cloud Skill Billing (independent from Pack entitlement) =====
+
+  async createCloudSkillPlan(params: {
+    plan_id: string;
+    name: string;
+    description?: string;
+    skill_ids: readonly string[];
+    price_monthly_fen: number;
+    price_yearly_fen: number;
+    included_calls?: number;
+    requests_per_minute?: number;
+    max_concurrency?: number;
+    status?: CloudSkillPlanStatus;
+  }): Promise<CloudSkillPlanRecord> {
+    const values = {
+      ...params,
+      included_calls: params.included_calls ?? 1_000,
+      requests_per_minute: params.requests_per_minute ?? 60,
+      max_concurrency: params.max_concurrency ?? 2,
+    };
+    validateCloudSkillPlanFields(values);
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
-      const updated = await client.query<UserRow>(
-        `UPDATE account_user SET balance_fen = balance_fen + $2
-         WHERE user_id = $1 AND balance_fen + $2 >= 0
-         RETURNING *`,
-        [params.user_id, params.amount_fen],
+      await client.query(
+        `INSERT INTO cloud_skill_plan
+           (plan_id, name, description, price_monthly_fen, price_yearly_fen,
+            included_calls, requests_per_minute, max_concurrency, status)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        [params.plan_id, params.name, params.description ?? "", params.price_monthly_fen,
+          params.price_yearly_fen, values.included_calls, values.requests_per_minute,
+          values.max_concurrency, params.status ?? "listed"],
       );
-      if (updated.rowCount === 0) {
-        await client.query("ROLLBACK");
-        const exists = await this.pool.query(`SELECT 1 FROM account_user WHERE user_id = $1`, [params.user_id]);
-        throw new Error(exists.rowCount === 0 ? `Unknown user: ${params.user_id}` : "INSUFFICIENT_BALANCE");
+      for (const skillId of params.skill_ids) {
+        await client.query(
+          `INSERT INTO cloud_skill_plan_skill (plan_id, skill_id) VALUES ($1, $2)`,
+          [params.plan_id, skillId],
+        );
       }
-      const txn = await client.query<TxnRow>(
-        `INSERT INTO wallet_txn (txn_id, user_id, type, amount_fen, balance_after_fen, order_id, remark)
-         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
-        [
-          `txn-${randomUUID()}`,
-          params.user_id,
-          params.type,
-          params.amount_fen,
-          Number(updated.rows[0]!.balance_fen),
-          params.order_id ?? null,
-          params.remark ?? null,
-        ],
-      );
       await client.query("COMMIT");
-      return toTxn(txn.rows[0]!);
-    } catch (err) {
+      return (await this.getCloudSkillPlan(params.plan_id))!;
+    } catch (error) {
       await client.query("ROLLBACK").catch(() => undefined);
-      throw err;
+      if ((error as { code?: string }).code === "23505") throw new Error("CLOUD_SKILL_PLAN_EXISTS");
+      throw error;
     } finally {
       client.release();
     }
   }
 
-  async listTransactions(userId?: string): Promise<WalletTransactionRecord[]> {
-    const res = userId
-      ? await this.pool.query<TxnRow>(`SELECT * FROM wallet_txn WHERE user_id = $1 ORDER BY created_at DESC`, [userId])
-      : await this.pool.query<TxnRow>(`SELECT * FROM wallet_txn ORDER BY created_at DESC`);
-    return res.rows.map(toTxn);
+  async getCloudSkillPlan(planId: string): Promise<CloudSkillPlanRecord | undefined> {
+    const result = await this.pool.query<CloudSkillPlanRow>(
+      `SELECT p.*, COALESCE(array_agg(ps.skill_id ORDER BY ps.skill_id)
+         FILTER (WHERE ps.skill_id IS NOT NULL), ARRAY[]::TEXT[]) AS skill_ids
+       FROM cloud_skill_plan p
+       LEFT JOIN cloud_skill_plan_skill ps ON ps.plan_id = p.plan_id
+       WHERE p.plan_id = $1
+       GROUP BY p.plan_id`,
+      [planId],
+    );
+    return result.rows[0] ? toCloudSkillPlan(result.rows[0]) : undefined;
   }
 
-  async listAllEntitlements(): Promise<EntitlementRecord[]> {
-    const res = await this.pool.query<EntitlementRow>(`SELECT * FROM entitlement ORDER BY created_at`);
-    return res.rows.map(toEntitlement);
+  async listCloudSkillPlans(status?: CloudSkillPlanStatus): Promise<CloudSkillPlanRecord[]> {
+    const result = await this.pool.query<CloudSkillPlanRow>(
+      `SELECT p.*, COALESCE(array_agg(ps.skill_id ORDER BY ps.skill_id)
+         FILTER (WHERE ps.skill_id IS NOT NULL), ARRAY[]::TEXT[]) AS skill_ids
+       FROM cloud_skill_plan p
+       LEFT JOIN cloud_skill_plan_skill ps ON ps.plan_id = p.plan_id
+       WHERE ($1::TEXT IS NULL OR p.status = $1)
+       GROUP BY p.plan_id
+       ORDER BY p.created_at, p.plan_id`,
+      [status ?? null],
+    );
+    return result.rows.map(toCloudSkillPlan);
   }
 
+  async updateCloudSkillPlan(
+    planId: string,
+    patch: Partial<Pick<CloudSkillPlanRecord,
+      "name" | "description" | "skill_ids" | "price_monthly_fen" | "price_yearly_fen" |
+      "included_calls" | "requests_per_minute" | "max_concurrency" | "status">>,
+  ): Promise<CloudSkillPlanRecord | undefined> {
+    const current = await this.getCloudSkillPlan(planId);
+    if (!current) return undefined;
+    const next = { ...current, ...patch, skill_ids: patch.skill_ids ? [...patch.skill_ids] : current.skill_ids };
+    validateCloudSkillPlanFields(next);
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        `UPDATE cloud_skill_plan SET name=$2, description=$3, price_monthly_fen=$4,
+           price_yearly_fen=$5, included_calls=$6, requests_per_minute=$7,
+           max_concurrency=$8, status=$9 WHERE plan_id=$1`,
+        [planId, next.name, next.description, next.price_monthly_fen, next.price_yearly_fen,
+          next.included_calls, next.requests_per_minute, next.max_concurrency, next.status],
+      );
+      if (patch.skill_ids !== undefined) {
+        // Existing entitlements keep their referenced mappings; removing a Skill with
+        // active history is rejected by the FK instead of silently broadening access.
+        // Apply the set delta so a no-op/full-form update never deletes a mapping
+        // that an active entitlement still references.
+        const currentSkillIds = new Set(current.skill_ids);
+        const nextSkillIds = new Set(next.skill_ids);
+        for (const skillId of currentSkillIds) {
+          if (!nextSkillIds.has(skillId)) {
+            await client.query(
+              `DELETE FROM cloud_skill_plan_skill WHERE plan_id=$1 AND skill_id=$2`,
+              [planId, skillId],
+            );
+          }
+        }
+        for (const skillId of nextSkillIds) {
+          if (!currentSkillIds.has(skillId)) {
+            await client.query(
+              `INSERT INTO cloud_skill_plan_skill(plan_id, skill_id) VALUES($1,$2)`,
+              [planId, skillId],
+            );
+          }
+        }
+      }
+      await client.query("COMMIT");
+      return (await this.getCloudSkillPlan(planId))!;
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async createCloudSkillSubscription(params: {
+    user_id: string;
+    tenant_id: string;
+    plan_id: string;
+    period: "monthly" | "yearly";
+    starts_at: string;
+    expires_at: string;
+    source_order_id: string;
+    status?: CloudSkillSubscriptionStatus;
+  }): Promise<{ subscription: CloudSkillSubscriptionRecord; existed: boolean }> {
+    if (!params.user_id || !params.tenant_id || params.starts_at >= params.expires_at) {
+      throw new Error("INVALID_CLOUD_SKILL_SUBSCRIPTION");
+    }
+    const inserted = await this.pool.query<CloudSkillSubscriptionRow>(
+      `INSERT INTO cloud_skill_subscription
+         (subscription_id,user_id,tenant_id,plan_id,status,period,starts_at,expires_at,source_order_id)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)
+       ON CONFLICT (source_order_id) DO NOTHING RETURNING *`,
+      [`csub-${randomUUID()}`, params.user_id, params.tenant_id, params.plan_id,
+        params.status ?? "active", params.period, params.starts_at, params.expires_at, params.source_order_id],
+    );
+    if (inserted.rows[0]) return { subscription: toCloudSkillSubscription(inserted.rows[0]), existed: false };
+    const existing = await this.getCloudSkillSubscriptionByOrder(params.source_order_id);
+    if (!existing || existing.user_id !== params.user_id || existing.plan_id !== params.plan_id) {
+      throw new Error("CLOUD_SKILL_ORDER_CONFLICT");
+    }
+    return { subscription: existing, existed: true };
+  }
+
+  async getCloudSkillSubscription(subscriptionId: string): Promise<CloudSkillSubscriptionRecord | undefined> {
+    const result = await this.pool.query<CloudSkillSubscriptionRow>(
+      `SELECT * FROM cloud_skill_subscription WHERE subscription_id=$1`, [subscriptionId],
+    );
+    return result.rows[0] ? toCloudSkillSubscription(result.rows[0]) : undefined;
+  }
+
+  async getCloudSkillSubscriptionByOrder(orderId: string): Promise<CloudSkillSubscriptionRecord | undefined> {
+    const result = await this.pool.query<CloudSkillSubscriptionRow>(
+      `SELECT * FROM cloud_skill_subscription WHERE source_order_id=$1`, [orderId],
+    );
+    return result.rows[0] ? toCloudSkillSubscription(result.rows[0]) : undefined;
+  }
+
+  async listCloudSkillSubscriptions(userId?: string): Promise<CloudSkillSubscriptionRecord[]> {
+    const result = userId === undefined
+      ? await this.pool.query<CloudSkillSubscriptionRow>(`SELECT * FROM cloud_skill_subscription ORDER BY created_at DESC`)
+      : await this.pool.query<CloudSkillSubscriptionRow>(
+          `SELECT * FROM cloud_skill_subscription WHERE user_id=$1 ORDER BY created_at DESC`, [userId],
+        );
+    return result.rows.map(toCloudSkillSubscription);
+  }
+
+  async updateCloudSkillSubscriptionStatus(
+    subscriptionId: string,
+    status: CloudSkillSubscriptionStatus,
+    changedAt = new Date().toISOString(),
+  ): Promise<CloudSkillSubscriptionRecord | undefined> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const result = await client.query<CloudSkillSubscriptionRow>(
+        `UPDATE cloud_skill_subscription SET status=$2,
+           cancelled_at=CASE WHEN $2='cancelled' THEN $3 ELSE cancelled_at END,
+           refunded_at=CASE WHEN $2='refunded' THEN $3 ELSE refunded_at END
+         WHERE subscription_id=$1 RETURNING *`,
+        [subscriptionId, status, changedAt],
+      );
+      if (result.rows[0] && status !== "active") {
+        await client.query(
+          `UPDATE cloud_skill_entitlement SET status='revoked'
+           WHERE subscription_id=$1 AND status='active'`, [subscriptionId],
+        );
+      }
+      await client.query("COMMIT");
+      return result.rows[0] ? toCloudSkillSubscription(result.rows[0]) : undefined;
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async grantCloudSkillEntitlement(params: {
+    subscription_id: string;
+    tenant_id?: string;
+    user_id?: string;
+    skill_id: string;
+    plan_id: string;
+    expires_at?: string;
+  }): Promise<{ entitlement: CloudSkillEntitlementRecord; existed: boolean }> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const subscriptionResult = await client.query<CloudSkillSubscriptionRow>(
+        `SELECT * FROM cloud_skill_subscription WHERE subscription_id=$1 FOR UPDATE`, [params.subscription_id],
+      );
+      const subscription = subscriptionResult.rows[0];
+      if (!subscription) throw new Error("CLOUD_SKILL_SUBSCRIPTION_NOT_FOUND");
+      if (subscription.plan_id !== params.plan_id) throw new Error("CLOUD_SKILL_PLAN_MISMATCH");
+      const tenantId = params.tenant_id ?? subscription.tenant_id;
+      const userId = params.user_id ?? subscription.user_id;
+      if (tenantId !== subscription.tenant_id || userId !== subscription.user_id) throw new Error("CLOUD_SKILL_SCOPE_MISMATCH");
+      const membership = await client.query(
+        `SELECT 1 FROM cloud_skill_plan_skill WHERE plan_id=$1 AND skill_id=$2`,
+        [params.plan_id, params.skill_id],
+      );
+      if (membership.rowCount === 0) throw new Error("CLOUD_SKILL_SKILL_NOT_IN_PLAN");
+      const existingResult = await client.query<CloudSkillEntitlementRow>(
+        `SELECT * FROM cloud_skill_entitlement
+         WHERE subscription_id=$1 AND skill_id=$2 AND plan_id=$3`,
+        [subscription.subscription_id, params.skill_id, params.plan_id],
+      );
+      let row: CloudSkillEntitlementRow;
+      let existed = false;
+      if (existingResult.rows[0]) {
+        existed = true;
+        const updated = await client.query<CloudSkillEntitlementRow>(
+          `UPDATE cloud_skill_entitlement SET expires_at=$2,
+             status=CASE WHEN $3='active' THEN 'active' ELSE 'revoked' END
+           WHERE entitlement_id=$1 RETURNING *`,
+          [existingResult.rows[0].entitlement_id, params.expires_at ?? subscription.expires_at, subscription.status],
+        );
+        row = updated.rows[0]!;
+      } else {
+        const inserted = await client.query<CloudSkillEntitlementRow>(
+          `INSERT INTO cloud_skill_entitlement
+             (entitlement_id,subscription_id,tenant_id,user_id,skill_id,plan_id,status,expires_at)
+           VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+          [`csent-${randomUUID()}`, subscription.subscription_id, tenantId, userId, params.skill_id,
+            params.plan_id, subscription.status === "active" ? "active" : "revoked",
+            params.expires_at ?? subscription.expires_at],
+        );
+        row = inserted.rows[0]!;
+      }
+      await client.query("COMMIT");
+      return { entitlement: toCloudSkillEntitlement(row), existed };
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async getCloudSkillEntitlement(entitlementId: string): Promise<CloudSkillEntitlementRecord | undefined> {
+    const result = await this.pool.query<CloudSkillEntitlementRow>(
+      `SELECT * FROM cloud_skill_entitlement WHERE entitlement_id=$1`, [entitlementId],
+    );
+    return result.rows[0] ? toCloudSkillEntitlement(result.rows[0]) : undefined;
+  }
+
+  async listCloudSkillEntitlements(query: CloudSkillEntitlementQuery = {}): Promise<CloudSkillEntitlementRecord[]> {
+    const values = [
+      cloudSkillQueryValue(query, "user_id", "userId") ?? null,
+      cloudSkillQueryValue(query, "tenant_id", "tenantId") ?? null,
+      cloudSkillQueryValue(query, "skill_id", "skillId") ?? null,
+      cloudSkillQueryValue(query, "plan_id", "planId") ?? null,
+    ];
+    const result = await this.pool.query<CloudSkillEntitlementRow>(
+      `SELECT * FROM cloud_skill_entitlement
+       WHERE ($1::TEXT IS NULL OR user_id=$1) AND ($2::TEXT IS NULL OR tenant_id=$2)
+         AND ($3::TEXT IS NULL OR skill_id=$3) AND ($4::TEXT IS NULL OR plan_id=$4)
+       ORDER BY created_at DESC`, values,
+    );
+    return result.rows.map(toCloudSkillEntitlement);
+  }
+
+  async revokeCloudSkillEntitlement(entitlementId: string): Promise<CloudSkillEntitlementRecord | undefined> {
+    const result = await this.pool.query<CloudSkillEntitlementRow>(
+      `UPDATE cloud_skill_entitlement SET status='revoked' WHERE entitlement_id=$1 RETURNING *`,
+      [entitlementId],
+    );
+    return result.rows[0] ? toCloudSkillEntitlement(result.rows[0]) : undefined;
+  }
+
+  async resolveCloudSkillAccess(query: CloudSkillAccessQuery): Promise<CloudSkillAccessGrant | undefined> {
+    const userId = cloudSkillQueryValue(query, "user_id", "userId");
+    const tenantId = cloudSkillQueryValue(query, "tenant_id", "tenantId");
+    const skillId = cloudSkillQueryValue(query, "skill_id", "skillId");
+    const allowed = query.allowed_plan_ids ?? query.allowedPlanIds;
+    const now = query.now ?? new Date().toISOString();
+    if (!userId || !tenantId || !skillId || (allowed !== undefined && allowed.length === 0)) return undefined;
+    const result = await this.pool.query<CloudSkillEntitlementRow & { subscription_data: CloudSkillSubscriptionRow }>(
+      `SELECT e.*, row_to_json(s) AS subscription_data
+       FROM cloud_skill_entitlement e
+       JOIN cloud_skill_subscription s
+         ON s.subscription_id=e.subscription_id AND s.plan_id=e.plan_id
+        AND s.tenant_id=e.tenant_id AND s.user_id=e.user_id
+       JOIN cloud_skill_plan_skill ps ON ps.plan_id=e.plan_id AND ps.skill_id=e.skill_id
+       WHERE e.user_id=$1 AND e.tenant_id=$2 AND e.skill_id=$3
+         AND e.status='active' AND e.expires_at>$4
+         AND s.status='active' AND s.starts_at<=$4 AND s.expires_at>$4
+         AND ($5::TEXT[] IS NULL OR e.plan_id=ANY($5::TEXT[]))
+       ORDER BY e.created_at DESC LIMIT 1`,
+      [userId, tenantId, skillId, now, allowed === undefined ? null : [...allowed]],
+    );
+    const row = result.rows[0];
+    if (!row) return undefined;
+    const plan = await this.getCloudSkillPlan(row.plan_id);
+    if (!plan) return undefined;
+    return {
+      ...toCloudSkillEntitlement(row),
+      subscription: toCloudSkillSubscription(row.subscription_data),
+      plan,
+    };
+  }
+
+  async hasCloudSkillAccess(query: CloudSkillAccessQuery): Promise<boolean> {
+    return (await this.resolveCloudSkillAccess(query)) !== undefined;
+  }
+
+  async upsertCloudAgentSkillBinding(
+    params: CloudAgentSkillBindingUpsertRequest,
+  ): Promise<{ binding: CloudAgentSkillBindingRecord; existed: boolean }> {
+    const result = await this.pool.query<CloudAgentSkillBindingRow & { inserted: boolean }>(
+      `INSERT INTO cloud_agent_skill_binding
+         (binding_id, tenant_id, device_id, user_id, agent_id, skill_id, status, revoked_at)
+       VALUES ($1, $2, $3, $4, $5, $6, 'active', NULL)
+       ON CONFLICT (tenant_id, device_id, agent_id, skill_id) DO UPDATE SET
+         user_id = COALESCE(EXCLUDED.user_id, cloud_agent_skill_binding.user_id),
+         status = 'active',
+         revoked_at = NULL
+       RETURNING *, (xmax = 0) AS inserted`,
+      [
+        `casb-${randomUUID()}`,
+        params.tenant_id,
+        params.device_id,
+        params.user_id ?? null,
+        params.agent_id,
+        params.skill_id,
+      ],
+    );
+    const row = result.rows[0];
+    if (!row) throw new Error("CLOUD_AGENT_SKILL_BINDING_UPSERT_FAILED");
+    return { binding: toCloudAgentSkillBinding(row), existed: !row.inserted };
+  }
+
+  async resolveCloudAgentSkillBinding(
+    query: CloudAgentSkillBindingResolveQuery,
+  ): Promise<CloudAgentSkillBindingRecord | undefined> {
+    const result = await this.pool.query<CloudAgentSkillBindingRow>(
+      `SELECT * FROM cloud_agent_skill_binding
+       WHERE tenant_id = $1 AND device_id = $2 AND agent_id = $3 AND skill_id = $4
+         AND status = 'active'
+         AND ($5::TEXT IS NULL OR user_id = $5)
+       LIMIT 1`,
+      [query.tenant_id, query.device_id, query.agent_id, query.skill_id, query.user_id ?? null],
+    );
+    return result.rows[0] ? toCloudAgentSkillBinding(result.rows[0]) : undefined;
+  }
+
+  async revokeCloudAgentSkillBinding(bindingId: string): Promise<CloudAgentSkillBindingRecord | undefined> {
+    const result = await this.pool.query<CloudAgentSkillBindingRow>(
+      `UPDATE cloud_agent_skill_binding
+       SET status = 'revoked', revoked_at = COALESCE(revoked_at, now())
+       WHERE binding_id = $1
+       RETURNING *`,
+      [bindingId],
+    );
+    return result.rows[0] ? toCloudAgentSkillBinding(result.rows[0]) : undefined;
+  }
+
+  async listCloudAgentSkillBindings(
+    query: CloudAgentSkillBindingListQuery = {},
+  ): Promise<CloudAgentSkillBindingRecord[]> {
+    const result = await this.pool.query<CloudAgentSkillBindingRow>(
+      `SELECT * FROM cloud_agent_skill_binding
+       WHERE ($1::TEXT IS NULL OR tenant_id = $1)
+         AND ($2::TEXT IS NULL OR device_id = $2)
+         AND ($3::TEXT IS NULL OR user_id = $3)
+         AND ($4::TEXT IS NULL OR agent_id = $4)
+         AND ($5::TEXT IS NULL OR skill_id = $5)
+         AND ($6::TEXT IS NULL OR status = $6)
+       ORDER BY created_at DESC, binding_id`,
+      [
+        query.tenant_id ?? null,
+        query.device_id ?? null,
+        query.user_id ?? null,
+        query.agent_id ?? null,
+        query.skill_id ?? null,
+        query.status ?? null,
+      ],
+    );
+    return result.rows.map(toCloudAgentSkillBinding);
+  }
+
+  /**
+   * Atomically admit one Cloud Skill task.  The subscription row is locked for
+   * the whole count-and-insert transaction, so two API replicas cannot both
+   * pass the same plan limits. Cycle usage is subscription+Skill; rate and
+   * concurrency are subscription+tenant+user+device (Agents share a device
+   * bucket). Reservation rows are the usage ledger; only `released_at` changes
+   * on release and usage is never refunded.
+   */
+  async reserveCloudSkillExecution(
+    params: CloudSkillExecutionReservationRequest,
+  ): Promise<CloudSkillExecutionReservationResult> {
+    const required = [
+      params.task_id,
+      params.user_id,
+      params.tenant_id,
+      params.device_id,
+      params.agent_id,
+      params.skill_id,
+      params.plan_id,
+    ];
+    if (required.some((value) => typeof value !== "string" || value.length === 0 || value.length > 256)) {
+      return { ok: false, reason: "INVALID_REQUEST" };
+    }
+    if (params.subscription_id !== undefined &&
+      (typeof params.subscription_id !== "string" || params.subscription_id.length === 0 || params.subscription_id.length > 256)) {
+      return { ok: false, reason: "INVALID_REQUEST" };
+    }
+    if (params.input_digest !== undefined &&
+      (typeof params.input_digest !== "string" || params.input_digest.length === 0 || params.input_digest.length > 512)) {
+      return { ok: false, reason: "INVALID_REQUEST" };
+    }
+    const now = parseExecutionNow(params.now);
+    const leaseTtlMs = normalizeLeaseTtl(params.lease_ttl_ms);
+    if (!now || leaseTtlMs === undefined) return { ok: false, reason: "INVALID_REQUEST" };
+    const nowIso = now.toISOString();
+    const nowMs = now.getTime();
+    let client: pg.PoolClient | undefined;
+    let inTransaction = false;
+    try {
+      client = await this.pool.connect();
+      await client.query("BEGIN");
+      inTransaction = true;
+
+      // The unique task_id is checked before entitlement/quota work.  This is
+      // what makes network retries return the original admission lease rather
+      // than consuming another included call.
+      const existingResult = await client.query<CloudSkillExecutionReservationRow>(
+        `SELECT * FROM cloud_skill_execution_reservation WHERE task_id=$1 FOR UPDATE`,
+        [params.task_id],
+      );
+      let existing = existingResult.rows[0];
+      if (existing) {
+        // A retry after a process crash must not leave an expired lease
+        // consuming concurrency. Keep the same reservation/idempotency row,
+        // but persist the fail-safe release before returning it.
+        if (existing.released_at === null && new Date(existing.lease_expires_at).getTime() <= nowMs) {
+          const expired = await client.query<CloudSkillExecutionReservationRow>(
+            `UPDATE cloud_skill_execution_reservation
+                SET released_at=COALESCE(released_at,$2)
+              WHERE reservation_id=$1
+              RETURNING *`,
+            [existing.reservation_id, nowIso],
+          );
+          existing = expired.rows[0] ?? existing;
+        }
+        const sameBinding = existing.user_id === params.user_id &&
+          existing.tenant_id === params.tenant_id &&
+          existing.device_id === params.device_id &&
+          existing.agent_id === params.agent_id &&
+          existing.skill_id === params.skill_id &&
+          existing.plan_id === params.plan_id &&
+          (params.subscription_id === undefined || existing.subscription_id === params.subscription_id) &&
+          (existing.input_digest ?? undefined) === params.input_digest;
+        await client.query("COMMIT");
+        inTransaction = false;
+        return sameBinding
+          ? { ok: true, reservation: toCloudSkillExecutionReservation(existing) }
+          : { ok: false, reason: "IDEMPOTENCY_CONFLICT" };
+      }
+
+      const planResult = await client.query<CloudSkillPlanRow>(
+        `SELECT p.plan_id, p.name, p.description,
+                COALESCE(array_agg(ps.skill_id) FILTER (WHERE ps.skill_id IS NOT NULL), '{}') AS skill_ids,
+                p.price_monthly_fen, p.price_yearly_fen, p.included_calls,
+                p.requests_per_minute, p.max_concurrency, p.status, p.created_at
+           FROM cloud_skill_plan p
+           LEFT JOIN cloud_skill_plan_skill ps ON ps.plan_id=p.plan_id
+          WHERE p.plan_id=$1
+          GROUP BY p.plan_id`,
+        [params.plan_id],
+      );
+      const plan = planResult.rows[0];
+      if (!plan) {
+        await client.query("ROLLBACK");
+        inTransaction = false;
+        return { ok: false, reason: "PLAN_MISMATCH" };
+      }
+
+      // Lock the selected subscription.  A caller may omit subscription_id;
+      // in that case choose the same newest matching grant as access queries.
+      const subscriptionResult = await client.query<CloudSkillSubscriptionRow>(
+        `SELECT * FROM cloud_skill_subscription
+          WHERE plan_id=$1 AND user_id=$2 AND tenant_id=$3
+            AND ($4::TEXT IS NULL OR subscription_id=$4)
+          ORDER BY created_at DESC
+          LIMIT 1
+          FOR UPDATE`,
+        [params.plan_id, params.user_id, params.tenant_id, params.subscription_id ?? null],
+      );
+      const subscription = subscriptionResult.rows[0];
+      if (!subscription) {
+        await client.query("ROLLBACK");
+        inTransaction = false;
+        return { ok: false, reason: "PLAN_MISMATCH" };
+      }
+      const subscriptionStartsMs = new Date(subscription.starts_at).getTime();
+      const subscriptionExpiresMs = new Date(subscription.expires_at).getTime();
+      if (subscription.status !== "active" || !Number.isFinite(subscriptionStartsMs) ||
+        !Number.isFinite(subscriptionExpiresMs) || nowMs < subscriptionStartsMs || nowMs >= subscriptionExpiresMs) {
+        await client.query("ROLLBACK");
+        inTransaction = false;
+        return { ok: false, reason: "SUBSCRIPTION_INACTIVE" };
+      }
+      if (plan.plan_id !== subscription.plan_id) {
+        await client.query("ROLLBACK");
+        inTransaction = false;
+        return { ok: false, reason: "PLAN_MISMATCH" };
+      }
+      const entitlementResult = await client.query<CloudSkillEntitlementRow>(
+        `SELECT e.*
+           FROM cloud_skill_entitlement e
+           JOIN cloud_skill_plan_skill ps ON ps.plan_id=e.plan_id AND ps.skill_id=e.skill_id
+          WHERE e.subscription_id=$1 AND e.tenant_id=$2 AND e.user_id=$3
+            AND e.skill_id=$4 AND e.plan_id=$5
+            AND e.status='active' AND e.expires_at>$6
+          ORDER BY e.created_at DESC
+          LIMIT 1
+          FOR UPDATE`,
+        [subscription.subscription_id, params.tenant_id, params.user_id, params.skill_id, params.plan_id, nowIso],
+      );
+      if (!entitlementResult.rows[0]) {
+        await client.query("ROLLBACK");
+        inTransaction = false;
+        return { ok: false, reason: "SKILL_NOT_ENTITLED" };
+      }
+
+      // Expired leases are fail-safe: release their concurrency before the
+      // count, while leaving their rows in the usage ledger.
+      await client.query(
+        `UPDATE cloud_skill_execution_reservation
+            SET released_at=COALESCE(released_at,$2)
+          WHERE subscription_id=$1 AND released_at IS NULL AND lease_expires_at <= $2`,
+        [subscription.subscription_id, nowIso],
+      );
+
+      const cycleUsage = await client.query<{ count: string | number }>(
+        `SELECT COUNT(*)::BIGINT AS count
+           FROM cloud_skill_execution_reservation
+          WHERE subscription_id=$1 AND skill_id=$2 AND reserved_at >= $3 AND reserved_at <= $4`,
+        [subscription.subscription_id, params.skill_id, new Date(subscriptionStartsMs).toISOString(), nowIso],
+      );
+      if (Number(cycleUsage.rows[0]?.count ?? 0) >= Number(plan.included_calls)) {
+        await client.query("ROLLBACK");
+        inTransaction = false;
+        return { ok: false, reason: "QUOTA_EXCEEDED" };
+      }
+
+      const minuteStartIso = new Date(Math.floor(nowMs / 60_000) * 60_000).toISOString();
+      const minuteUsage = await client.query<{ count: string | number }>(
+        `SELECT COUNT(*)::BIGINT AS count
+           FROM cloud_skill_execution_reservation
+          WHERE subscription_id=$1 AND tenant_id=$2 AND user_id=$3 AND device_id=$4
+            AND reserved_at >= $5 AND reserved_at <= $6`,
+        [subscription.subscription_id, params.tenant_id, params.user_id, params.device_id, minuteStartIso, nowIso],
+      );
+      if (Number(minuteUsage.rows[0]?.count ?? 0) >= Number(plan.requests_per_minute)) {
+        await client.query("ROLLBACK");
+        inTransaction = false;
+        return {
+          ok: false,
+          reason: "RATE_LIMITED",
+          retry_after_seconds: Math.max(1, Math.ceil((new Date(minuteStartIso).getTime() + 60_000 - nowMs) / 1000)),
+        };
+      }
+
+      const activeUsage = await client.query<{ count: string | number; next_expiry: string | Date | null }>(
+        `SELECT COUNT(*)::BIGINT AS count, MIN(lease_expires_at) AS next_expiry
+           FROM cloud_skill_execution_reservation
+          WHERE subscription_id=$1 AND tenant_id=$2 AND user_id=$3 AND device_id=$4
+            AND released_at IS NULL AND lease_expires_at > $5`,
+        [subscription.subscription_id, params.tenant_id, params.user_id, params.device_id, nowIso],
+      );
+      if (Number(activeUsage.rows[0]?.count ?? 0) >= Number(plan.max_concurrency)) {
+        const nextExpiryMs = activeUsage.rows[0]?.next_expiry
+          ? new Date(activeUsage.rows[0]!.next_expiry!).getTime()
+          : Number.NaN;
+        await client.query("ROLLBACK");
+        inTransaction = false;
+        return {
+          ok: false,
+          reason: "CONCURRENCY_LIMIT",
+          retry_after_seconds: retryAfterSeconds(nextExpiryMs, nowMs),
+        };
+      }
+
+      const reservationId = `csres-${randomUUID()}`;
+      const inserted = await client.query<CloudSkillExecutionReservationRow>(
+        `INSERT INTO cloud_skill_execution_reservation
+          (reservation_id, task_id, user_id, tenant_id, device_id, agent_id,
+           skill_id, plan_id, subscription_id, input_digest, period_start,
+           reserved_at, lease_expires_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+         RETURNING *`,
+        [
+          reservationId,
+          params.task_id,
+          params.user_id,
+          params.tenant_id,
+          params.device_id,
+          params.agent_id,
+          params.skill_id,
+          params.plan_id,
+          subscription.subscription_id,
+          params.input_digest ?? null,
+          new Date(subscriptionStartsMs).toISOString(),
+          nowIso,
+          new Date(nowMs + leaseTtlMs).toISOString(),
+        ],
+      );
+      await client.query("COMMIT");
+      inTransaction = false;
+      return { ok: true, reservation: toCloudSkillExecutionReservation(inserted.rows[0]!) };
+    } catch (error) {
+      if (inTransaction && client) await client.query("ROLLBACK").catch(() => undefined);
+      // A concurrent replica may have won the task_id unique race.  Return its
+      // original lease when the binding agrees; this preserves idempotency.
+      if ((error as { code?: string }).code === "23505") {
+        try {
+          const existing = client
+            ? await client.query<CloudSkillExecutionReservationRow>(
+                `SELECT * FROM cloud_skill_execution_reservation WHERE task_id=$1`, [params.task_id],
+              )
+            : await this.pool.query<CloudSkillExecutionReservationRow>(
+                `SELECT * FROM cloud_skill_execution_reservation WHERE task_id=$1`, [params.task_id],
+              );
+          const row = existing.rows[0];
+          if (row) {
+            const sameBinding = row.user_id === params.user_id && row.tenant_id === params.tenant_id &&
+              row.device_id === params.device_id && row.agent_id === params.agent_id &&
+              row.skill_id === params.skill_id && row.plan_id === params.plan_id &&
+              (params.subscription_id === undefined || row.subscription_id === params.subscription_id) &&
+              (row.input_digest ?? undefined) === params.input_digest;
+            return sameBinding
+              ? { ok: true, reservation: toCloudSkillExecutionReservation(row) }
+              : { ok: false, reason: "IDEMPOTENCY_CONFLICT" };
+          }
+        } catch {
+          // Fall through to the stable unavailable result below.
+        }
+      }
+      return { ok: false, reason: "STORAGE_UNAVAILABLE" };
+    } finally {
+      client?.release();
+    }
+  }
+
+  async releaseCloudSkillExecution(
+    params: CloudSkillExecutionReleaseRequest,
+  ): Promise<CloudSkillExecutionReleaseResult> {
+    const now = parseExecutionNow(params.now);
+    if (!now || (!params.reservation_id && !params.task_id)) return { released: false };
+    const nowIso = now.toISOString();
+    let client: pg.PoolClient | undefined;
+    let inTransaction = false;
+    try {
+      client = await this.pool.connect();
+      await client.query("BEGIN");
+      inTransaction = true;
+      const result = params.reservation_id
+        ? await client.query<CloudSkillExecutionReservationRow>(
+            `SELECT * FROM cloud_skill_execution_reservation WHERE reservation_id=$1 FOR UPDATE`,
+            [params.reservation_id],
+          )
+        : await client.query<CloudSkillExecutionReservationRow>(
+            `SELECT * FROM cloud_skill_execution_reservation WHERE task_id=$1 FOR UPDATE`,
+            [params.task_id],
+          );
+      const row = result.rows[0];
+      if (!row) {
+        await client.query("ROLLBACK");
+        inTransaction = false;
+        return { released: false };
+      }
+      if ((params.task_id !== undefined && row.task_id !== params.task_id) ||
+        (params.user_id !== undefined && row.user_id !== params.user_id) ||
+        (params.tenant_id !== undefined && row.tenant_id !== params.tenant_id)) {
+        await client.query("ROLLBACK");
+        inTransaction = false;
+        return { released: false };
+      }
+      const alreadyReleased = row.released_at !== null;
+      if (alreadyReleased) {
+        await client.query("COMMIT");
+        inTransaction = false;
+        return { released: false, reservation: toCloudSkillExecutionReservation(row) };
+      }
+      const leaseExpired = new Date(row.lease_expires_at).getTime() <= now.getTime();
+      const updated = await client.query<CloudSkillExecutionReservationRow>(
+        `UPDATE cloud_skill_execution_reservation
+            SET released_at=COALESCE(released_at,$2)
+          WHERE reservation_id=$1
+          RETURNING *`,
+        [row.reservation_id, nowIso],
+      );
+      await client.query("COMMIT");
+      inTransaction = false;
+      return {
+        released: !leaseExpired,
+        reservation: toCloudSkillExecutionReservation(updated.rows[0]!),
+      };
+    } catch {
+      if (inTransaction && client) await client.query("ROLLBACK").catch(() => undefined);
+      return { released: false };
+    } finally {
+      client?.release();
+    }
+  }
+
+  async getCloudSkillOperationalSummary(nowValue?: string): Promise<CloudSkillOperationalSummary> {
+    const now = parseExecutionNow(nowValue);
+    if (!now) throw new Error("INVALID_CLOUD_SKILL_OPERATIONAL_TIME");
+    type Row = {
+      plan_id: string;
+      skill_id: string;
+      calls: string | number;
+      active_concurrency: string | number;
+      succeeded: string | number;
+      failed: string | number;
+      cancelled: string | number;
+      active_subscriptions: string | number;
+      included_calls_per_subscription: string | number;
+    };
+    const result = await this.pool.query<Row>(
+      `WITH active_subscriptions AS (
+         SELECT plan_id, COUNT(*)::BIGINT AS count
+           FROM cloud_skill_subscription
+          WHERE status='active' AND starts_at <= $1 AND expires_at > $1
+          GROUP BY plan_id
+       )
+       SELECT ps.plan_id,
+              ps.skill_id,
+              COUNT(r.reservation_id) FILTER (
+                WHERE r.reserved_at >= $1::timestamptz - interval '24 hours' AND r.reserved_at <= $1
+              )::BIGINT AS calls,
+              COUNT(r.reservation_id) FILTER (
+                WHERE r.released_at IS NULL AND r.lease_expires_at > $1
+              )::BIGINT AS active_concurrency,
+              COUNT(r.reservation_id) FILTER (
+                WHERE r.reserved_at >= $1::timestamptz - interval '24 hours' AND r.reserved_at <= $1
+                  AND task.status='succeeded'
+              )::BIGINT AS succeeded,
+              COUNT(r.reservation_id) FILTER (
+                WHERE r.reserved_at >= $1::timestamptz - interval '24 hours' AND r.reserved_at <= $1
+                  AND task.status IN ('failed','timed_out')
+              )::BIGINT AS failed,
+              COUNT(r.reservation_id) FILTER (
+                WHERE r.reserved_at >= $1::timestamptz - interval '24 hours' AND r.reserved_at <= $1
+                  AND task.status='cancelled'
+              )::BIGINT AS cancelled,
+              COALESCE(active.count, 0)::BIGINT AS active_subscriptions,
+              plan.included_calls::BIGINT AS included_calls_per_subscription
+         FROM cloud_skill_plan_skill ps
+         JOIN cloud_skill_plan plan ON plan.plan_id=ps.plan_id
+         LEFT JOIN active_subscriptions active ON active.plan_id=ps.plan_id
+         LEFT JOIN cloud_skill_execution_reservation r
+           ON r.plan_id=ps.plan_id AND r.skill_id=ps.skill_id
+         LEFT JOIN cloud_task task ON task.task_id=r.task_id
+        GROUP BY ps.plan_id, ps.skill_id, active.count, plan.included_calls
+        ORDER BY ps.plan_id, ps.skill_id`,
+      [now.toISOString()],
+    );
+    return {
+      window_hours: 24,
+      generated_at: now.toISOString(),
+      skills: result.rows.map((row) => ({
+        plan_id: row.plan_id,
+        skill_id: row.skill_id,
+        calls: Number(row.calls),
+        active_concurrency: Number(row.active_concurrency),
+        succeeded: Number(row.succeeded),
+        failed: Number(row.failed),
+        cancelled: Number(row.cancelled),
+        active_subscriptions: Number(row.active_subscriptions),
+        included_calls_per_subscription: Number(row.included_calls_per_subscription),
+      })),
+    };
+  }
+
+  /** Legacy Pack/entitlement/release APIs are intentionally unavailable in clean launch. */
   async grantEntitlement(params: {
     tenant_id: string;
     device_id: string;
     pack_id: string;
     scope?: "tenant" | "user" | "device";
     expires_at?: string;
+    source_order_id?: string;
   }): Promise<EntitlementRecord> {
-    const res = await this.pool.query<EntitlementRow>(
-      `INSERT INTO entitlement (entitlement_id, tenant_id, device_id, pack_id, scope, expires_at)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       RETURNING *`,
-      [
-        `ent-${randomUUID()}`,
-        params.tenant_id,
-        params.device_id,
-        params.pack_id,
-        params.scope ?? "device",
-        params.expires_at ?? FAR_FUTURE,
-      ],
-    );
-    return toEntitlement(res.rows[0]!);
+    void params;
+    throw cleanLaunchUnsupported("entitlement.grant");
   }
 
   async revokeEntitlement(entitlementId: string): Promise<EntitlementRecord | undefined> {
-    const res = await this.pool.query<EntitlementRow>(
-      `UPDATE entitlement SET status = 'revoked' WHERE entitlement_id = $1 RETURNING *`,
-      [entitlementId],
-    );
-    return res.rows[0] ? toEntitlement(res.rows[0]) : undefined;
+    void entitlementId;
+    throw cleanLaunchUnsupported("entitlement.revoke");
   }
 
   async listEntitlements(deviceId: string): Promise<EntitlementRecord[]> {
-    const res = await this.pool.query<EntitlementRow>(
-      `SELECT * FROM entitlement WHERE device_id = $1 ORDER BY created_at`,
-      [deviceId],
-    );
-    return res.rows.map(toEntitlement);
+    void deviceId;
+    throw cleanLaunchUnsupported("entitlement.list");
   }
 
   async publishRelease(params: {
@@ -1276,45 +2785,114 @@ export class PgStore implements CloudStore {
     digest: string;
     signature_key_id: string;
   }): Promise<{ release: PackReleaseRecord; existed: boolean }> {
-    const { id, version, minDesktopVersion } = params.pack.manifest.pack;
-    const inserted = await this.pool.query<ReleaseRow>(
-      `INSERT INTO pack_release (pack_id, version, pack, digest, signature_key_id, min_desktop_version)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       ON CONFLICT (pack_id, version) DO NOTHING
-       RETURNING *`,
-      [id, version, JSON.stringify(params.pack), params.digest, params.signature_key_id, minDesktopVersion],
-    );
-    if (inserted.rowCount === 0) {
-      const existing = await this.pool.query<ReleaseRow>(
-        `SELECT * FROM pack_release WHERE pack_id = $1 AND version = $2`,
-        [id, version],
-      );
-      return { release: toRelease(existing.rows[0]!), existed: true };
-    }
-    return { release: toRelease(inserted.rows[0]!), existed: false };
+    void params;
+    throw cleanLaunchUnsupported("pack_release.publish");
   }
 
   async getRelease(packId: string, version: string): Promise<PackReleaseRecord | undefined> {
-    const res = await this.pool.query<ReleaseRow>(
-      `SELECT * FROM pack_release WHERE pack_id = $1 AND version = $2`,
-      [packId, version],
-    );
-    return res.rows[0] ? toRelease(res.rows[0]) : undefined;
+    void packId;
+    void version;
+    throw cleanLaunchUnsupported("pack_release.get");
   }
 
   async listReleases(packId?: string): Promise<PackReleaseRecord[]> {
-    const res = packId
-      ? await this.pool.query<ReleaseRow>(`SELECT * FROM pack_release WHERE pack_id = $1 ORDER BY created_at`, [packId])
-      : await this.pool.query<ReleaseRow>(`SELECT * FROM pack_release ORDER BY created_at`);
-    return res.rows.map(toRelease);
+    void packId;
+    throw cleanLaunchUnsupported("pack_release.list");
   }
 
   async revokeRelease(packId: string, version: string): Promise<PackReleaseRecord | undefined> {
-    const res = await this.pool.query<ReleaseRow>(
-      `UPDATE pack_release SET status = 'revoked' WHERE pack_id = $1 AND version = $2 RETURNING *`,
-      [packId, version],
+    void packId;
+    void version;
+    throw cleanLaunchUnsupported("pack_release.revoke");
+  }
+
+  async publishSkillRelease(params: {
+    package: SkillPackage;
+    digest: string;
+    signature_key_id: string;
+  }): Promise<{ release: SkillReleaseRecord; existed: boolean }> {
+    void params;
+    throw cleanLaunchUnsupported("skill_release.publish");
+  }
+
+  async getSkillRelease(skillId: string, version: string): Promise<SkillReleaseRecord | undefined> {
+    void skillId;
+    void version;
+    throw cleanLaunchUnsupported("skill_release.get");
+  }
+
+  async listSkillReleases(skillId?: string): Promise<SkillReleaseRecord[]> {
+    void skillId;
+    throw cleanLaunchUnsupported("skill_release.list");
+  }
+
+  async revokeSkillRelease(skillId: string, version: string): Promise<SkillReleaseRecord | undefined> {
+    void skillId;
+    void version;
+    throw cleanLaunchUnsupported("skill_release.revoke");
+  }
+
+  async publishCloudSkillAdapterRelease(params: {
+    manifest: CloudSkillAdapterManifest;
+    files: Record<string, string>;
+    digest: string;
+    signature_key_id: string;
+  }): Promise<{ release: CloudSkillAdapterReleaseRecord; existed: boolean }> {
+    const inserted = await this.pool.query<CloudSkillAdapterReleaseRow>(
+      `INSERT INTO cloud_skill_adapter_release (
+        skill_id, version, manifest_data, files_data, digest, signature_key_id,
+        min_manager_version, openclaw_version
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       ON CONFLICT (skill_id, version) DO NOTHING
+       RETURNING *`,
+      [
+        params.manifest.skill_id,
+        params.manifest.version,
+        JSON.stringify(params.manifest),
+        JSON.stringify(params.files),
+        params.digest,
+        params.signature_key_id,
+        params.manifest.compatibility.manager_min_version,
+        params.manifest.compatibility.openclaw_version,
+      ],
     );
-    return res.rows[0] ? toRelease(res.rows[0]) : undefined;
+    if (inserted.rowCount === 0) {
+      const existing = await this.pool.query<CloudSkillAdapterReleaseRow>(
+        `SELECT * FROM cloud_skill_adapter_release WHERE skill_id = $1 AND version = $2`,
+        [params.manifest.skill_id, params.manifest.version],
+      );
+      return { release: toCloudSkillAdapterRelease(existing.rows[0]!), existed: true };
+    }
+    return { release: toCloudSkillAdapterRelease(inserted.rows[0]!), existed: false };
+  }
+
+  async getCloudSkillAdapterRelease(skillId: string, version: string): Promise<CloudSkillAdapterReleaseRecord | undefined> {
+    const result = await this.pool.query<CloudSkillAdapterReleaseRow>(
+      `SELECT * FROM cloud_skill_adapter_release WHERE skill_id = $1 AND version = $2`,
+      [skillId, version],
+    );
+    return result.rows[0] ? toCloudSkillAdapterRelease(result.rows[0]) : undefined;
+  }
+
+  async listCloudSkillAdapterReleases(skillId?: string): Promise<CloudSkillAdapterReleaseRecord[]> {
+    const result = skillId === undefined
+      ? await this.pool.query<CloudSkillAdapterReleaseRow>(
+          `SELECT * FROM cloud_skill_adapter_release ORDER BY created_at, skill_id, version`,
+        )
+      : await this.pool.query<CloudSkillAdapterReleaseRow>(
+          `SELECT * FROM cloud_skill_adapter_release WHERE skill_id = $1 ORDER BY created_at, version`,
+          [skillId],
+        );
+    return result.rows.map(toCloudSkillAdapterRelease);
+  }
+
+  async revokeCloudSkillAdapterRelease(skillId: string, version: string): Promise<CloudSkillAdapterReleaseRecord | undefined> {
+    const result = await this.pool.query<CloudSkillAdapterReleaseRow>(
+      `UPDATE cloud_skill_adapter_release SET status = 'revoked', revoked_at = now()
+       WHERE skill_id = $1 AND version = $2 AND status = 'active' RETURNING *`,
+      [skillId, version],
+    );
+    return result.rows[0] ? toCloudSkillAdapterRelease(result.rows[0]) : undefined;
   }
 
   async getModelGatewayConfig(configId = "default"): Promise<ModelGatewayConfigRecord | undefined> {
@@ -1331,86 +2909,104 @@ export class PgStore implements CloudStore {
   }
 
   async setModelGatewayConfig(config: ModelGatewayConfigRecord): Promise<ModelGatewayConfigRecord> {
+    // The five client-facing UI fields were retired with the legacy product.
+    // Ignore them even when an old in-process caller still supplies them.
     const res = await this.pool.query<ModelConfigRow>(
       `INSERT INTO model_gateway_config
          (config_id, scope_type, scope_id, enabled, emergency_disabled, base_url, model_id, display_name, api_type,
-          context_window, max_tokens, encrypted_api_key, fallback_config_id, request_timeout_ms, max_retries,
-          circuit_breaker_threshold, circuit_breaker_cooldown_ms, min_desktop_version, max_desktop_version,
-          assistant_name, assistant_avatar_path, welcome_message, quick_tasks, features,
+          context_window, max_tokens, input_capabilities, encrypted_api_key, fallback_config_id, request_timeout_ms,
+          max_retries, circuit_breaker_threshold, circuit_breaker_cooldown_ms, min_manager_version, max_manager_version,
           device_requests_per_minute, device_daily_tokens, tenant_monthly_tokens, max_device_concurrency,
-          input_cost_microunits_per_million, output_cost_microunits_per_million, cache_cost_microunits_per_million,
-          updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
-               $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32)
+          input_cost_microunits_per_million, output_cost_microunits_per_million, cache_cost_microunits_per_million, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28)
        ON CONFLICT (config_id) DO UPDATE SET
-         scope_type = EXCLUDED.scope_type,
-         scope_id = EXCLUDED.scope_id,
-         enabled = EXCLUDED.enabled,
-         emergency_disabled = EXCLUDED.emergency_disabled,
-         base_url = EXCLUDED.base_url,
-         model_id = EXCLUDED.model_id,
-         display_name = EXCLUDED.display_name,
-         api_type = EXCLUDED.api_type,
-         context_window = EXCLUDED.context_window,
-         max_tokens = EXCLUDED.max_tokens,
-         encrypted_api_key = EXCLUDED.encrypted_api_key,
-         fallback_config_id = EXCLUDED.fallback_config_id,
-         request_timeout_ms = EXCLUDED.request_timeout_ms,
-         max_retries = EXCLUDED.max_retries,
-         circuit_breaker_threshold = EXCLUDED.circuit_breaker_threshold,
-         circuit_breaker_cooldown_ms = EXCLUDED.circuit_breaker_cooldown_ms,
-         min_desktop_version = EXCLUDED.min_desktop_version,
-         max_desktop_version = EXCLUDED.max_desktop_version,
-         assistant_name = EXCLUDED.assistant_name,
-         assistant_avatar_path = EXCLUDED.assistant_avatar_path,
-         welcome_message = EXCLUDED.welcome_message,
-         quick_tasks = EXCLUDED.quick_tasks,
-         features = EXCLUDED.features,
-         device_requests_per_minute = EXCLUDED.device_requests_per_minute,
-         device_daily_tokens = EXCLUDED.device_daily_tokens,
-         tenant_monthly_tokens = EXCLUDED.tenant_monthly_tokens,
-         max_device_concurrency = EXCLUDED.max_device_concurrency,
-         input_cost_microunits_per_million = EXCLUDED.input_cost_microunits_per_million,
-         output_cost_microunits_per_million = EXCLUDED.output_cost_microunits_per_million,
-         cache_cost_microunits_per_million = EXCLUDED.cache_cost_microunits_per_million,
-         updated_at = EXCLUDED.updated_at
+         scope_type=EXCLUDED.scope_type, scope_id=EXCLUDED.scope_id, enabled=EXCLUDED.enabled,
+         emergency_disabled=EXCLUDED.emergency_disabled, base_url=EXCLUDED.base_url, model_id=EXCLUDED.model_id,
+         display_name=EXCLUDED.display_name, api_type=EXCLUDED.api_type, context_window=EXCLUDED.context_window,
+         max_tokens=EXCLUDED.max_tokens, input_capabilities=EXCLUDED.input_capabilities,
+         encrypted_api_key=EXCLUDED.encrypted_api_key, fallback_config_id=EXCLUDED.fallback_config_id,
+         request_timeout_ms=EXCLUDED.request_timeout_ms, max_retries=EXCLUDED.max_retries,
+         circuit_breaker_threshold=EXCLUDED.circuit_breaker_threshold,
+         circuit_breaker_cooldown_ms=EXCLUDED.circuit_breaker_cooldown_ms,
+         min_manager_version=EXCLUDED.min_manager_version, max_manager_version=EXCLUDED.max_manager_version,
+         device_requests_per_minute=EXCLUDED.device_requests_per_minute, device_daily_tokens=EXCLUDED.device_daily_tokens,
+         tenant_monthly_tokens=EXCLUDED.tenant_monthly_tokens, max_device_concurrency=EXCLUDED.max_device_concurrency,
+         input_cost_microunits_per_million=EXCLUDED.input_cost_microunits_per_million,
+         output_cost_microunits_per_million=EXCLUDED.output_cost_microunits_per_million,
+         cache_cost_microunits_per_million=EXCLUDED.cache_cost_microunits_per_million,
+         updated_at=EXCLUDED.updated_at
        RETURNING *`,
       [
-        config.config_id,
-        config.scope_type,
-        config.scope_id,
-        config.enabled,
-        config.emergency_disabled,
-        config.base_url,
-        config.model_id,
-        config.display_name,
-        config.api_type,
-        config.context_window,
-        config.max_tokens,
-        config.encrypted_api_key ?? null,
-        config.fallback_config_id ?? null,
-        config.request_timeout_ms,
-        config.max_retries,
-        config.circuit_breaker_threshold,
-        config.circuit_breaker_cooldown_ms,
-        config.min_desktop_version,
-        config.max_desktop_version ?? null,
-        config.assistant_name,
-        config.assistant_avatar_path,
-        config.welcome_message,
-        JSON.stringify(config.quick_tasks),
-        JSON.stringify(config.features),
-        config.device_requests_per_minute,
-        config.device_daily_tokens,
-        config.tenant_monthly_tokens,
-        config.max_device_concurrency,
-        config.input_cost_microunits_per_million,
-        config.output_cost_microunits_per_million,
-        config.cache_cost_microunits_per_million,
-        config.updated_at,
+        config.config_id, config.scope_type, config.scope_id, config.enabled, config.emergency_disabled,
+        config.base_url, config.model_id, config.display_name, config.api_type, config.context_window,
+        config.max_tokens, JSON.stringify(config.input_capabilities), config.encrypted_api_key ?? null,
+        config.fallback_config_id ?? null, config.request_timeout_ms, config.max_retries,
+        config.circuit_breaker_threshold, config.circuit_breaker_cooldown_ms, config.min_manager_version,
+        config.max_manager_version ?? null, config.device_requests_per_minute, config.device_daily_tokens,
+        config.tenant_monthly_tokens, config.max_device_concurrency, config.input_cost_microunits_per_million,
+        config.output_cost_microunits_per_million, config.cache_cost_microunits_per_million, config.updated_at,
       ],
     );
     return toModelConfig(res.rows[0]!);
+  }
+
+  async listFeaturePolicies(): Promise<FeaturePolicyRecord[]> {
+    const result = await this.pool.query<FeaturePolicyRow>(
+      `SELECT policy_id, policy, revision, updated_at
+       FROM feature_policy
+       ORDER BY feature_id, audience, scope, scope_id`,
+    );
+    return result.rows.map(toFeaturePolicy);
+  }
+
+  async upsertFeaturePolicy(policy: FeaturePolicyEntry): Promise<FeaturePolicyRecord> {
+    const client = await this.pool.connect();
+    const scopeId = policy.scope_id ?? "-";
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        "SELECT pg_advisory_xact_lock(hashtext($1))",
+        ["longhub-feature-policy-capacity"],
+      );
+      const existing = await client.query(
+        `SELECT 1 FROM feature_policy
+         WHERE feature_id = $1 AND audience = $2 AND scope = $3 AND scope_id = $4`,
+        [policy.feature_id, policy.audience, policy.scope, scopeId],
+      );
+      if (existing.rowCount === 0) {
+        const count = await client.query<{ count: number }>(
+          "SELECT count(*)::int AS count FROM feature_policy",
+        );
+        if (count.rows[0]!.count >= FEATURE_POLICY_MAX_FEATURES) {
+          throw new FeaturePolicyCapacityError();
+        }
+      }
+      const result = await client.query<FeaturePolicyRow>(
+        `INSERT INTO feature_policy
+           (policy_id, feature_id, audience, scope, scope_id, policy, revision, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, nextval('feature_policy_revision_seq'), now())
+         ON CONFLICT (feature_id, audience, scope, scope_id) DO UPDATE SET
+           policy = EXCLUDED.policy,
+           revision = nextval('feature_policy_revision_seq'),
+           updated_at = now()
+         RETURNING policy_id, policy, revision, updated_at`,
+        [
+          "fp-" + randomUUID(),
+          policy.feature_id,
+          policy.audience,
+          policy.scope,
+          scopeId,
+          JSON.stringify(policy),
+        ],
+      );
+      await client.query("COMMIT");
+      return toFeaturePolicy(result.rows[0]!);
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async incrementClientTelemetry(records: readonly ClientTelemetryAggregateRecord[]): Promise<void> {
@@ -1421,14 +3017,14 @@ export class PgStore implements CloudStore {
       for (const record of records) {
         await client.query(
           `INSERT INTO client_telemetry_hourly
-             (bucket_start, event_type, desktop_version, openclaw_version, platform,
+             (bucket_start, event_type, manager_version, openclaw_version, platform,
               architecture, value, agent_count_bucket, count)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-           ON CONFLICT (bucket_start, event_type, desktop_version, openclaw_version,
+           ON CONFLICT (bucket_start, event_type, manager_version, openclaw_version,
                         platform, architecture, value, agent_count_bucket)
            DO UPDATE SET count = client_telemetry_hourly.count + EXCLUDED.count`,
           [
-            record.bucket_start, record.event_type, record.desktop_version, record.openclaw_version,
+            record.bucket_start, record.event_type, record.manager_version, record.openclaw_version,
             record.platform, record.architecture, record.value, record.agent_count_bucket, record.count,
           ],
         );
@@ -1446,7 +3042,7 @@ export class PgStore implements CloudStore {
     const result = await this.pool.query<{
       bucket_start: string;
       event_type: ClientTelemetryAggregateRecord["event_type"];
-      desktop_version: string;
+      manager_version: string;
       openclaw_version: string;
       platform: ClientTelemetryAggregateRecord["platform"];
       architecture: ClientTelemetryAggregateRecord["architecture"];
@@ -1499,6 +3095,82 @@ export class PgStore implements CloudStore {
     }));
   }
 
+  async incrementHttpRouteMetrics(records: readonly HttpRouteMetricRecord[]): Promise<void> {
+    if (records.length === 0) return;
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      for (const record of records) {
+        await client.query(
+          `INSERT INTO http_route_hourly (bucket_start, route_id, status_class, latency_bucket, count)
+           VALUES ($1, $2, $3, $4, $5)
+           ON CONFLICT (bucket_start, route_id, status_class, latency_bucket)
+           DO UPDATE SET count = http_route_hourly.count + EXCLUDED.count`,
+          [record.bucket_start, record.route_id, record.status_class, record.latency_bucket, record.count],
+        );
+      }
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async listHttpRouteMetrics(): Promise<HttpRouteMetricRecord[]> {
+    const result = await this.pool.query<{
+      bucket_start: string;
+      route_id: HttpRouteMetricRecord["route_id"];
+      status_class: HttpRouteMetricRecord["status_class"];
+      latency_bucket: HttpRouteMetricRecord["latency_bucket"];
+      count: string | number;
+    }>(`SELECT * FROM http_route_hourly ORDER BY bucket_start, route_id`);
+    return result.rows.map((row) => ({
+      ...row,
+      bucket_start: new Date(row.bucket_start).toISOString(),
+      count: Number(row.count),
+    }));
+  }
+
+  async recordFeaturePolicyEmergencyObservation(
+    record: FeaturePolicyEmergencyObservationRecord,
+  ): Promise<boolean> {
+    const result = await this.pool.query(
+      `INSERT INTO feature_policy_emergency_observation
+         (policy_id, revision, feature_id, policy_updated_at, first_enforced_at, latency_ms)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (policy_id, revision) DO NOTHING`,
+      [
+        record.policy_id,
+        record.revision,
+        record.feature_id,
+        record.policy_updated_at,
+        record.first_enforced_at,
+        record.latency_ms,
+      ],
+    );
+    return (result.rowCount ?? 0) === 1;
+  }
+
+  async listFeaturePolicyEmergencyObservations(): Promise<FeaturePolicyEmergencyObservationRecord[]> {
+    const result = await this.pool.query<{
+      policy_id: string;
+      revision: string | number;
+      feature_id: string;
+      policy_updated_at: string;
+      first_enforced_at: string;
+      latency_ms: string | number;
+    }>(`SELECT * FROM feature_policy_emergency_observation ORDER BY first_enforced_at`);
+    return result.rows.map((row) => ({
+      ...row,
+      revision: Number(row.revision),
+      policy_updated_at: new Date(row.policy_updated_at).toISOString(),
+      first_enforced_at: new Date(row.first_enforced_at).toISOString(),
+      latency_ms: Number(row.latency_ms),
+    }));
+  }
+
   async incrementModelUsage(records: readonly ModelUsageAggregateRecord[]): Promise<void> {
     for (const record of records) {
       await this.pool.query(
@@ -1535,32 +3207,42 @@ export class PgStore implements CloudStore {
     }));
   }
 
+  // Knowledge base and Pack review are post-launch modules.  They are not
+  // represented in the clean-launch schema and must fail closed.
   async createKnowledgeDocument(params: Omit<KnowledgeDocumentRecord, "document_id" | "created_at">): Promise<KnowledgeDocumentRecord> {
-    const result = await this.pool.query<KnowledgeDocumentRecord>(
-      `INSERT INTO knowledge_document(document_id,tenant_id,title,source_label,content) VALUES($1,$2,$3,$4,$5) RETURNING *`,
-      [`doc-${randomUUID()}`, params.tenant_id, params.title, params.source_label, params.content],
-    );
-    return { ...result.rows[0]!, created_at: new Date(result.rows[0]!.created_at).toISOString() };
+    void params;
+    throw cleanLaunchUnsupported("knowledge.create");
   }
 
   async listKnowledgeDocuments(tenantId: string): Promise<KnowledgeDocumentRecord[]> {
-    const result = await this.pool.query<KnowledgeDocumentRecord>(`SELECT * FROM knowledge_document WHERE tenant_id=$1 ORDER BY created_at DESC`, [tenantId]);
-    return result.rows.map((row) => ({ ...row, created_at: new Date(row.created_at).toISOString() }));
+    void tenantId;
+    throw cleanLaunchUnsupported("knowledge.list");
   }
 
   async deleteKnowledgeDocument(documentId: string): Promise<KnowledgeDocumentRecord | undefined> {
-    const result = await this.pool.query<KnowledgeDocumentRecord>(`DELETE FROM knowledge_document WHERE document_id=$1 RETURNING *`, [documentId]);
-    return result.rows[0] ? { ...result.rows[0], created_at: new Date(result.rows[0].created_at).toISOString() } : undefined;
+    void documentId;
+    throw cleanLaunchUnsupported("knowledge.delete");
   }
 
   async createPackReview(params: { publisher: string; pack: PackFile; findings: string[] }): Promise<PackReviewRecord> {
-    const now = new Date().toISOString(); const id = `review-${randomUUID()}`;
-    const result = await this.pool.query<PackReviewRecord>(`INSERT INTO pack_review(review_id,publisher,pack,status,findings,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$6) RETURNING *`, [id, params.publisher, JSON.stringify(params.pack), params.findings.length ? "rejected" : "submitted", JSON.stringify(params.findings), now]);
-    return result.rows[0]!;
+    void params;
+    throw cleanLaunchUnsupported("pack_review.create");
   }
-  async getPackReview(reviewId: string): Promise<PackReviewRecord | undefined> { return (await this.pool.query<PackReviewRecord>(`SELECT * FROM pack_review WHERE review_id=$1`, [reviewId])).rows[0]; }
-  async listPackReviews(): Promise<PackReviewRecord[]> { return (await this.pool.query<PackReviewRecord>(`SELECT * FROM pack_review ORDER BY created_at DESC`)).rows; }
-  async updatePackReview(reviewId: string, patch: Pick<PackReviewRecord, "status" | "findings">): Promise<PackReviewRecord | undefined> { return (await this.pool.query<PackReviewRecord>(`UPDATE pack_review SET status=$2,findings=$3,updated_at=now() WHERE review_id=$1 RETURNING *`, [reviewId, patch.status, JSON.stringify(patch.findings)])).rows[0]; }
+
+  async getPackReview(reviewId: string): Promise<PackReviewRecord | undefined> {
+    void reviewId;
+    throw cleanLaunchUnsupported("pack_review.get");
+  }
+
+  async listPackReviews(): Promise<PackReviewRecord[]> {
+    throw cleanLaunchUnsupported("pack_review.list");
+  }
+
+  async updatePackReview(reviewId: string, patch: Pick<PackReviewRecord, "status" | "findings">): Promise<PackReviewRecord | undefined> {
+    void reviewId;
+    void patch;
+    throw cleanLaunchUnsupported("pack_review.update");
+  }
 
   async close(): Promise<void> {
     await this.pool.end();

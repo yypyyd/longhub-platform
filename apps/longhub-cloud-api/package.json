@@ -17,18 +17,22 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
+    "test:legacy": "node ./scripts/run-legacy-surface-tests.mjs",
+    "db:migrate": "node ./scripts/migrate.mjs",
     "start": "node dist/main.js"
   },
   "dependencies": {
+    "@longhub/cloud-skill-adapter": "workspace:*",
+    "@longhub/feature-policy": "workspace:*",
     "@longhub/observability": "workspace:*",
     "@longhub/pack-schema": "workspace:*",
+    "longhub-executor": "workspace:*",
     "pg": "^8.13.1"
   },
   "devDependencies": {
     "typescript": "^5.7.3",
     "@types/node": "^20.17.12",
     "@types/pg": "^8.11.10",
-    "vitest": "^2.1.8",
-    "longhub-executor": "workspace:*"
+    "vitest": "^2.1.8"
   }
 }

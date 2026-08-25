@@ -4,11 +4,13 @@ LongHub OpenClaw Bridge 是龙枢内置的 OpenClaw 工具插件。它把模型�
 
 ## 当前能力
 
-- 注册可选工具 `longhub_resume_screen`，供已授权的 HR Agent 使用。
+- 注册只读 `longhub_resume_screen` 和写权限 `longhub_offer_letter`，仅供已授权的 HR Agent 使用。
 - 工具参数只包含业务输入；身份、会话、权限、确认和预算字段均不在 schema 中。
 - Factory 缺少任一可信上下文字段时不创建工具（fail closed）。
 - 通过随机启动令牌保护的 `127.0.0.1` HTTP RPC 调用 Desktop，再由 Desktop 转发到 Core。
 - Core 按已验签 Profile/Pack 原始声明和在线 entitlement 复验重新计算权限与预算，调用方不能授予权限。
+- 录用通知工具的候选人、岗位、薪资和日期经过严格解析；Core 根据受信声明生成展示载荷，Desktop
+  确认期间保持同一个 ToolCall 等待，批准后只重试完全相同的绑定请求。
 - 对业务参数、RPC 请求和返回错误使用严格、有限大小的数据结构。
 
 ## 运行方式
@@ -31,6 +33,7 @@ Desktop 在 Gateway 启动前完成以下配置：
 | `createLongHubBridgeClient()` | 创建仅允许回环 HTTP 端点的受限 RPC 客户端 |
 | `parseBridgeExecuteRequest()` | 严格解析 `skillId/input/context` 请求 |
 | `parseResumeScreenInput()` | 校验简历初筛输入并拒绝额外身份或权限字段 |
+| `parseOfferLetterInput()` | 校验录用通知四个业务字段并拒绝 approved/身份/权限等额外字段 |
 | `LONGHUB_BRIDGE_SKILL_PERMISSIONS` | 声明当前 Bridge 可调用技能及其最小权限 |
 
 ## 开发验证
@@ -43,8 +46,8 @@ pnpm --filter @longhub/openclaw-bridge plugin:validate
 
 ## 当前限制
 
-当前完成 `LH-036-05` 执行授权闭环，但仍只开放只读简历初筛。录用通知书的 Core 确认记录已经
-具备，仍需接入 Control UI 确认卡片后才能开放；JD 起草存在从 OpenClaw 回调 OpenClaw 的递归风险，
-薪酬带宽依赖云端技能，这两项继续保持关闭。
+录用通知书已作为 Confirmation Center V1 的真实写权限验收载体；Feature Policy 必须在线允许
+skill.catalog 才会进入 Core policy，离线缓存不会开放写工具。JD 起草仍存在从 OpenClaw 回调
+OpenClaw 的递归风险，薪酬带宽依赖云端技能，这两项继续保持关闭。
 
 详细边界见 [DESIGN.md](DESIGN.md)。

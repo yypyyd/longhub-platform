@@ -1,12 +1,10 @@
 /** 管理后台 API 客户端：默认同源（nginx 反代 /v1），可用 VITE_API_BASE 覆盖。 */
+import { isValidManagerInstallerFilename } from "./manager-release-model";
 const BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? "";
 
 export interface Metrics {
   users_total: number;
   devices_total: number;
-  orders_paid_total: number;
-  revenue_fen: number;
-  releases_total: number;
   operations: {
     window_hours: 24;
     client_starts: number;
@@ -23,7 +21,7 @@ export interface Metrics {
     update_success_rate: number | null;
     product_errors: number;
     top_product_errors: Array<{ code: string; count: number }>;
-    desktop_versions: Array<{ version: string; count: number }>;
+    manager_versions: Array<{ version: string; count: number }>;
   };
   model_usage: {
     requests: number;
@@ -39,7 +37,6 @@ export interface AdminUser {
   user_id: string;
   email: string;
   status: string;
-  balance_fen: number;
   created_at: string;
 }
 
@@ -51,8 +48,6 @@ export interface AdminDevice {
   app_version: string;
   display_name?: string;
   user_id?: string;
-  activation_code_id?: string;
-  activated_at?: string;
   last_seen_at?: string;
   last_model_success_at?: string;
   last_error_code?: string;
@@ -62,72 +57,17 @@ export interface AdminDevice {
   created_at: string;
 }
 
-export interface AdminActivationCode {
-  activation_code_id: string;
-  tenant_id: string;
-  code_hint: string;
-  label?: string;
-  status: "active" | "revoked";
-  max_uses: number;
-  use_count: number;
-  pack_ids: string[];
-  expires_at: string;
-  created_at: string;
-}
-
-export interface AdminEntitlement {
-  entitlement_id: string;
-  device_id: string;
-  pack_id: string;
-  scope: string;
-  status: string;
-  expires_at: string;
-  created_at: string;
-}
-
-export interface AdminRelease {
-  pack_id: string;
-  version: string;
-  status: string;
-  digest: string;
-  signature_key_id: string;
-  min_desktop_version: string;
-  created_at: string;
-}
-
-export interface AdminProduct {
-  product_id: string;
-  pack_id: string;
-  name: string;
-  description: string;
-  price_monthly_fen: number;
-  price_yearly_fen: number;
-  status: "listed" | "unlisted";
-  created_at: string;
-}
-
 export interface AdminOrder {
   order_id: string;
   user_id: string;
-  type: "plan" | "recharge";
-  pack_id?: string;
+  type: "cloud_skill_plan";
+  plan_id?: string;
+  tenant_id?: string;
   period?: string;
   amount_fen: number;
   status: string;
-  pay_method?: string;
   created_at: string;
   paid_at?: string;
-}
-
-export interface AdminTxn {
-  txn_id: string;
-  user_id: string;
-  type: string;
-  amount_fen: number;
-  balance_after_fen: number;
-  order_id?: string;
-  remark?: string;
-  created_at: string;
 }
 
 export interface AdminAudit {
@@ -138,7 +78,7 @@ export interface AdminAudit {
   created_at: string;
 }
 
-export interface ClientRelease {
+export interface ManagerRelease {
   manifest: {
     schema_version: "longhub/client-update/v2";
     sequence: number;
@@ -158,6 +98,8 @@ export interface ClientRelease {
       seed: string;
       updated_at: string;
     };
+    /** clean-launch 发布面只接受免费 LongHub Manager。 */
+    product_surface: "longhub-manager";
   };
   signature_key_id: string;
   signature: string;
@@ -166,6 +108,88 @@ export interface ClientRelease {
   rollout_updated_by: string;
   rollout_updated_at: string;
   url: string;
+}
+
+export type CloudArtifactSurface = "cloud-plugin" | "cloud-cli";
+
+export interface CloudArtifactRelease {
+  manifest: {
+    schema_version: "longhub/cloud-plugin-release/v1" | "longhub/cloud-cli-release/v1";
+    product_surface: "longhub-cloud-plugin" | "longhub-cloud-cli";
+    sequence: number;
+    version: string;
+    channel: "stable" | "beta";
+    platform: "win32";
+    arch: "x64";
+    filename: string;
+    size: number;
+    sha256: string;
+    url_path: string;
+    published_at: string;
+    compatibility: { openclaw_version: string; node: string };
+    rollout: {
+      status: "active" | "paused";
+      basis_points: number;
+      seed: string;
+      updated_at: string;
+    };
+    signature_key_id: string;
+    signature: string;
+  };
+  uploaded_by: string;
+  uploaded_at: string;
+  rollout_updated_by: string;
+  rollout_updated_at: string;
+  withdrawn_by?: string;
+  withdrawn_at?: string;
+  url: string;
+}
+
+/** 云端 Skill 的商业记录；用户本地 OpenClaw 不属于此域。 */
+export interface AdminCloudSkillPlan {
+  plan_id: string;
+  name: string;
+  description: string;
+  skill_ids: string[];
+  price_monthly_fen: number;
+  price_yearly_fen: number;
+  included_calls: number;
+  requests_per_minute: number;
+  max_concurrency: number;
+  status: "listed" | "unlisted";
+  created_at: string;
+}
+
+export interface AdminCloudSkillSubscription {
+  subscription_id: string;
+  user_id: string;
+  tenant_id: string;
+  plan_id: string;
+  status: "active" | "cancelled" | "expired" | "refunded" | "suspended";
+  period: "monthly" | "yearly";
+  starts_at: string;
+  expires_at: string;
+  source_order_id: string;
+  created_at: string;
+  cancelled_at?: string;
+  refunded_at?: string;
+}
+
+/** 云端 Skill 薄适配器的发布元数据；制品正文不会在列表接口中返回。 */
+export interface AdminCloudSkillAdapterRelease {
+  skill_id: string;
+  version: string;
+  status: "active" | "revoked";
+  digest: string;
+  signature_key_id: string;
+  min_manager_version: string;
+  openclaw_version: string;
+  compatibility: {
+    manager_min_version: string;
+    openclaw_version: string;
+  };
+  created_at: string;
+  revoked_at?: string;
 }
 
 export interface AdminModelConfig {
@@ -185,34 +209,12 @@ export interface AdminModelConfig {
   encryption_ready: boolean;
   request_timeout_ms: number;
   max_retries: number;
-  min_desktop_version: string;
-  assistant_name: string;
-  welcome_message: string;
+  min_manager_version: string;
   device_requests_per_minute: number;
   device_daily_tokens: number;
   tenant_monthly_tokens: number;
   max_device_concurrency: number;
   updated_at?: string;
-}
-
-export interface AdminKnowledgeDocument {
-  document_id: string;
-  tenant_id: string;
-  title: string;
-  source_label: string;
-  bytes: number;
-  created_at: string;
-}
-
-export interface AdminPackReview {
-  review_id: string;
-  publisher: string;
-  pack_id: string;
-  version: string;
-  status: "submitted" | "rejected" | "approved" | "published";
-  findings: string[];
-  created_at: string;
-  updated_at: string;
 }
 
 export class ApiError extends Error {
@@ -224,7 +226,10 @@ export class ApiError extends Error {
   }
 }
 
-export async function api<T>(path: string, options: { method?: string; body?: unknown; token?: string } = {}): Promise<T> {
+export async function api<T>(
+  path: string,
+  options: { method?: string; body?: unknown; token?: string } = {},
+): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     method: options.method ?? "GET",
     headers: {
@@ -233,21 +238,64 @@ export async function api<T>(path: string, options: { method?: string; body?: un
     },
     body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
   });
-  const json = (await res.json()) as T & { code?: string; message?: string };
-  if (!res.ok) throw new ApiError(json.code ?? "ERROR", json.message ?? "请求失败");
+  const raw = await res.text();
+  let json: (T & { code?: string; message?: string }) | undefined;
+  try {
+    json = JSON.parse(raw) as T & { code?: string; message?: string };
+  } catch {
+    json = undefined;
+  }
+  if (!res.ok) throw new ApiError(json?.code ?? (res.status === 404 ? "NOT_FOUND" : "ERROR"), json?.message ?? "请求失败");
+  if (!json) throw new ApiError("INVALID_RESPONSE", "服务返回了无法识别的响应");
   return json;
 }
 
-/** 上传客户端安装包（二进制流） */
-export async function uploadClientRelease(token: string, version: string, file: File): Promise<ClientRelease> {
+/** 上传 LongHub Manager 安装包（二进制流）；服务端继续使用既有 client-releases 路由。 */
+export async function uploadManagerRelease(token: string, version: string, file: File): Promise<ManagerRelease> {
+  if (!isValidManagerInstallerFilename(version, file.name)) {
+    throw new ApiError("INVALID_MANAGER_RELEASE_FILENAME", "Manager 安装包文件名必须与版本匹配：LongHub-Manager-Setup-x.y.z.exe");
+  }
   const query = `version=${encodeURIComponent(version)}&filename=${encodeURIComponent(file.name)}`;
   const res = await fetch(`${BASE}/v1/admin/client-releases?${query}`, {
     method: "POST",
     headers: { authorization: `Bearer ${token}`, "content-type": "application/octet-stream" },
     body: file,
   });
-  const json = (await res.json()) as { release: ClientRelease; code?: string; message?: string };
-  if (!res.ok) throw new ApiError(json.code ?? "ERROR", json.message ?? "上传失败");
+  const raw = await res.text();
+  let json: { release?: ManagerRelease; code?: string; message?: string } | undefined;
+  try {
+    json = JSON.parse(raw) as { release?: ManagerRelease; code?: string; message?: string };
+  } catch {
+    json = undefined;
+  }
+  if (!res.ok) throw new ApiError(json?.code ?? "ERROR", json?.message ?? "上传失败");
+  if (!json?.release) throw new ApiError("INVALID_RESPONSE", "服务未返回版本信息");
+  return json.release;
+}
+
+export async function uploadCloudArtifactRelease(
+  token: string,
+  surface: CloudArtifactSurface,
+  version: string,
+  file: File,
+): Promise<CloudArtifactRelease> {
+  const expected = surface === "cloud-plugin"
+    ? `longhub-openclaw-cloud-plugin-${version}.tgz`
+    : `longhub-cloud-cli-${version}.tgz`;
+  if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/u.test(version) || file.name !== expected) {
+    throw new ApiError("INVALID_CLOUD_ARTIFACT_FILENAME", `制品文件名必须为 ${expected}`);
+  }
+  const query = new URLSearchParams({ version, filename: file.name, channel: "stable" });
+  const res = await fetch(`${BASE}/v1/admin/${surface}-releases?${query}`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/octet-stream" },
+    body: file,
+  });
+  const raw = await res.text();
+  let json: { release?: CloudArtifactRelease; code?: string; message?: string } | undefined;
+  try { json = JSON.parse(raw) as typeof json; } catch { json = undefined; }
+  if (!res.ok) throw new ApiError(json?.code ?? "UPLOAD_FAILED", json?.message ?? "制品上传失败");
+  if (!json?.release) throw new ApiError("INVALID_RESPONSE", "服务未返回制品发布信息");
   return json.release;
 }
 

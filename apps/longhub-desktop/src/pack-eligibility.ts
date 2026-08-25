@@ -37,7 +37,7 @@ export class CloudPackEligibilitySource implements PackEligibilitySource {
         method: "POST",
         headers: { ...headers, "content-type": "application/json" },
         body: JSON.stringify({
-          desktop_version: this.options.desktopVersion,
+          manager_version: this.options.desktopVersion,
           installed_packs: packs.map((pack) => ({ pack_id: pack.packId, version: pack.version })),
         }),
         signal: AbortSignal.timeout(10_000),

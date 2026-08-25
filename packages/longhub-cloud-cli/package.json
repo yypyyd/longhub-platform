@@ -1,0 +1,25 @@
+{
+  "name": "@longhub/cloud-cli",
+  "version": "0.1.2",
+  "private": false,
+  "type": "module",
+  "main": "./dist/cli.js",
+  "types": "./dist/cli.d.ts",
+  "bin": { "longhub-cloud": "./dist/cli.js" },
+  "files": ["dist/cli.js", "dist/cli.js.map", "dist/*.d.ts", "README.md"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json && esbuild src/cli.ts --bundle --platform=node --format=esm --target=node20 --sourcemap --outfile=dist/cli.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "artifact:pack": "pnpm build && node ./scripts/build-artifact.mjs --surface cloud-cli"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.12",
+    "@longhub/windows-credential": "workspace:*",
+    "esbuild": "0.21.5",
+    "tar": "7.5.19",
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.8"
+  }
+}

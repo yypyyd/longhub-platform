@@ -66,7 +66,7 @@ describe("脱敏诊断快照", () => {
       schema_version: DIAGNOSTIC_EXPORT_SCHEMA,
       generated_at: "2026-07-30T01:02:03.456Z",
       application: {
-        desktop_version: "0.4.0",
+        manager_version: "0.4.0",
         openclaw_version: "2026.7.1-2",
         electron_version: "31.7.7",
         node_version: "24.15.0",

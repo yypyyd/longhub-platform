@@ -1,6 +1,7 @@
 import { CORE_RPC_VERSION, HARD_LIMITS, type CoreBudget } from "./index.js";
 import {
   bridgeConfirmationBinding,
+  buildBridgeConfirmationDisplay,
   bridgePayloadDigest,
   clampBudget,
   createBridgeConfirmationRequest,
@@ -203,13 +204,24 @@ export class CoreRuntime {
     const sensitivePermissions = effectivePermissions.filter(permissionRequiresConfirmation);
     if (sensitivePermissions.length > 0) {
       this.pruneConfirmations(now);
+      if (!grant.confirmation) {
+        throw new BridgeAuthorizationError("写权限 Skill 缺少可信确认展示声明");
+      }
+      let display;
+      try {
+        display = buildBridgeConfirmationDisplay(grant.confirmation, params.input);
+      } catch {
+        throw new BridgeAuthorizationError("写权限 Skill 确认展示参数无效");
+      }
       const bindingRequest = {
         agentId,
+        skillId: params.skillId,
         profileVersion: grant.profileVersion,
         sessionId,
         toolCallId,
         permissions: sensitivePermissions,
         payloadDigest: bridgePayloadDigest(params.skillId, params.input),
+        display,
       };
       const binding = bridgeConfirmationBinding(bindingRequest);
       const existingId = this.confirmationIdsByBinding.get(binding);
@@ -223,7 +235,8 @@ export class CoreRuntime {
         confirmation = createBridgeConfirmationRequest(bindingRequest, now, 5 * 60_000);
         this.confirmations.set(confirmation.confirmationId, confirmation);
         this.confirmationIdsByBinding.set(binding, confirmation.confirmationId);
-        this.options.onConfirmationRequest?.(confirmation);
+        const { status: _status, ...request } = confirmation;
+        this.options.onConfirmationRequest?.(request);
       }
       if (confirmation.status === "denied") {
         throw new BridgeAuthorizationError("用户已拒绝该操作");

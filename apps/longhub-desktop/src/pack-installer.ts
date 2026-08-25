@@ -95,11 +95,11 @@ export class PackInstaller {
     }
 
     // 4. 兼容检查
-    if (!semverGte(ctx.desktopVersion, manifest.pack.minDesktopVersion)) {
+    if (!semverGte(ctx.desktopVersion, manifest.pack.minManagerVersion)) {
       return {
         ok: false,
         code: "DESKTOP_INCOMPATIBLE",
-        message: `需要 Desktop >= ${manifest.pack.minDesktopVersion}，当前 ${ctx.desktopVersion}`,
+        message: `需要 LongHub Manager >= ${manifest.pack.minManagerVersion}，当前 ${ctx.desktopVersion}`,
       };
     }
 
@@ -269,8 +269,8 @@ export class PackInstaller {
   verifyActivePack(packId: string, ctx: InstallContext): ActivePackContent {
     const active = this.readActivePack(packId);
     if (!active) throw new Error(`Pack 尚未安装或没有 active 版本: ${packId}`);
-    if (!semverGte(ctx.desktopVersion, active.manifest.pack.minDesktopVersion)) {
-      throw new Error(`Pack ${packId} 与当前 Desktop ${ctx.desktopVersion} 不兼容`);
+    if (!semverGte(ctx.desktopVersion, active.manifest.pack.minManagerVersion)) {
+      throw new Error(`Pack ${packId} 与当前 LongHub Manager ${ctx.desktopVersion} 不兼容`);
     }
     const publicKey = ctx.trustedKeys.get(active.manifest.integrity.signatureKeyId);
     if (!publicKey) throw new Error(`不信任的签名密钥: ${active.manifest.integrity.signatureKeyId}`);

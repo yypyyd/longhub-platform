@@ -1,0 +1,116 @@
+name: Clean-launch Unit and Contract
+
+on:
+  pull_request:
+  push:
+    branches: [master, main, "codex/**"]
+  workflow_dispatch:
+
+concurrency:
+  group: clean-launch-unit-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Current workspace typecheck, lint and build
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.22.3
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm ci:quality
+
+  unit-contract:
+    name: Current JS and TS unit and contract tests
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.22.3
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm ci:unit-contract
+
+  manager-go:
+    name: LongHub Manager Go tests
+    runs-on: windows-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: apps/longhub-manager
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24.x"
+          cache: false
+      - run: go test ./...
+
+  postgres-16:
+    name: PostgreSQL 16 migration and store contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: longhub
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      LONGHUB_TEST_DATABASE_URL: postgres://postgres:longhub@127.0.0.1:5432/postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.22.3
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build workspace dependencies
+        run: pnpm build
+      - name: Apply clean-launch baseline
+        env:
+          DATABASE_URL: ${{ env.LONGHUB_TEST_DATABASE_URL }}
+        run: pnpm --filter longhub-cloud-api db:migrate
+      - name: Verify clean-launch catalog inventory
+        env:
+          DATABASE_URL: ${{ env.LONGHUB_TEST_DATABASE_URL }}
+        run: node infrastructure/migrations/clean-launch/run.mjs
+      - run: pnpm --filter longhub-cloud-api test
+
+  nginx-contract:
+    name: Nginx syntax and rate-limit contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.22.3
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter longhub-cloud-api exec vitest run test/edge-rate-limit.test.ts
+      - name: Validate real Nginx parser
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y gettext-base nginx openssl
+          sudo bash infrastructure/deployment/tests/verify-assets.sh

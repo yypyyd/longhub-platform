@@ -37,7 +37,7 @@ afterAll(() => {
   rmSync(releaseDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
-function upload(version: string, content: Buffer, filename = `LongHub-Setup-${version}.exe`) {
+function upload(version: string, content: Buffer, filename = `LongHub-Manager-Setup-${version}.exe`) {
   return fetch(
     `${baseUrl}/v1/admin/client-releases?version=${encodeURIComponent(version)}&filename=${encodeURIComponent(filename)}`,
     {
@@ -67,10 +67,11 @@ describe("客户端安装包签名发布", () => {
     expect(await response.json()).toEqual({ release: null });
   });
 
-  it("拒绝任意文件名和缺失管理凭据", async () => {
+  it("拒绝旧制品名、任意文件名和缺失管理凭据", async () => {
+    expect((await upload("0.4.0", Buffer.from("installer"), "LongHub-Setup-0.4.0.exe")).status).toBe(422);
     expect((await upload("0.4.0", Buffer.from("installer"), "renamed.exe")).status).toBe(422);
     const unauthorized = await fetch(
-      `${baseUrl}/v1/admin/client-releases?version=0.4.0&filename=LongHub-Setup-0.4.0.exe`,
+      `${baseUrl}/v1/admin/client-releases?version=0.4.0&filename=LongHub-Manager-Setup-0.4.0.exe`,
       { method: "POST", body: Buffer.from("installer") },
     );
     expect(unauthorized.status).toBe(401);
@@ -82,12 +83,14 @@ describe("客户端安装包签名发布", () => {
     expect(uploaded.status).toBe(201);
     const body = (await uploaded.json()) as { release: SignedClientUpdateMetadata & { url: string } };
     expect(body.release.manifest).toMatchObject({
+      product_surface: "longhub-manager",
       sequence: 1,
       version: "0.4.0",
       channel: "stable",
       size: content.length,
       sha256: clientUpdateDigest(content),
-      url_path: "/downloads/LongHub-Setup-0.4.0.exe",
+      filename: "LongHub-Manager-Setup-0.4.0.exe",
+      url_path: "/downloads/LongHub-Manager-Setup-0.4.0.exe",
       rollout: { status: "paused", basis_points: 0 },
     });
     expect(body.release.url).toBe(body.release.manifest.url_path);
@@ -103,9 +106,9 @@ describe("客户端安装包签名发布", () => {
       latest.release,
       new Map([[updateKey.keyId, updateKey.publicKeyPem]]),
     )).toBe(true);
-    expect(readFileSync(join(releaseDir, "LongHub-Setup-0.4.0.exe"))).toEqual(content);
+    expect(readFileSync(join(releaseDir, "LongHub-Manager-Setup-0.4.0.exe"))).toEqual(content);
     if (process.platform !== "win32") {
-      expect(statSync(join(releaseDir, "LongHub-Setup-0.4.0.exe")).mode & 0o777).toBe(0o644);
+      expect(statSync(join(releaseDir, "LongHub-Manager-Setup-0.4.0.exe")).mode & 0o777).toBe(0o644);
     }
   });
 
@@ -116,6 +119,7 @@ describe("客户端安装包签名发布", () => {
     expect(active.status).toBe(200);
     const activeRelease = (await active.json()) as { release: SignedClientUpdateMetadata };
     expect(activeRelease.release.manifest).toMatchObject({
+      product_surface: "longhub-manager",
       sequence: 2,
       rollout: { status: "active", basis_points: 500 },
     });
@@ -145,6 +149,7 @@ describe("客户端安装包签名发布", () => {
     expect(response.status).toBe(200);
     const body = await response.json() as { release: SignedClientUpdateMetadata };
     expect(body.release.manifest).toMatchObject({
+      product_surface: "longhub-manager",
       version: "0.4.0",
       channel: "stable",
       rollout: { status: "paused", basis_points: 2_500 },

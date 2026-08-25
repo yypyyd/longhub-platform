@@ -4,7 +4,6 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { CLIENT_TELEMETRY_MAX_BYTES, CLIENT_TELEMETRY_SCHEMA } from "@longhub/observability";
 import { createCloudApiServer } from "../src/server.js";
 import { MemoryStore } from "../src/memory-store.js";
-import { activateTestDevice } from "./helpers/activate-device.js";
 
 const store = new MemoryStore();
 let api: ReturnType<typeof createCloudApiServer>;
@@ -16,7 +15,6 @@ beforeAll(async () => {
   await once(api, "listening");
   baseUrl = `http://127.0.0.1:${(api.address() as AddressInfo).port}`;
   deviceToken = await register("telemetry-active");
-  await activateTestDevice(baseUrl, "longhub-dev-admin", deviceToken);
 });
 
 afterAll(() => api.close());
@@ -34,7 +32,7 @@ function event(eventType: "client_started" | "gateway_state" = "client_started")
   const common = {
     event_type: eventType,
     occurred_at: new Date().toISOString(),
-    desktop_version: "0.4.0",
+    manager_version: "0.4.0",
     openclaw_version: "2026.7.1-2",
     platform: "win32",
     architecture: "x64",
@@ -56,17 +54,17 @@ function submit(token: string | undefined, body: unknown): Promise<Response> {
 }
 
 describe("POST /v1/client/telemetry", () => {
-  it("只接受已激活设备，并把身份留在聚合存储之外", async () => {
+  it("只接受已注册设备，并把身份留在聚合存储之外", async () => {
     expect((await submit(undefined, { schema_version: CLIENT_TELEMETRY_SCHEMA, events: [event()] })).status).toBe(401);
     const unactivated = await register("telemetry-unactivated");
-    expect((await submit(unactivated, { schema_version: CLIENT_TELEMETRY_SCHEMA, events: [event()] })).status).toBe(403);
+    expect((await submit(unactivated, { schema_version: CLIENT_TELEMETRY_SCHEMA, events: [event()] })).status).toBe(202);
 
     const response = await submit(deviceToken, {
       schema_version: CLIENT_TELEMETRY_SCHEMA,
       events: [event(), event("gateway_state"), {
         event_type: "previous_exit",
         occurred_at: new Date().toISOString(),
-        desktop_version: "0.4.0",
+        manager_version: "0.4.0",
         openclaw_version: "2026.7.1-2",
         platform: "win32",
         architecture: "x64",
@@ -77,7 +75,9 @@ describe("POST /v1/client/telemetry", () => {
     expect(await response.json()).toEqual({ accepted: 3 });
     const rows = await store.listClientTelemetry();
     expect(rows).toHaveLength(3);
-    expect(rows.every((row) => row.count === 1)).toBe(true);
+    // The earlier registered-device probe uses the same aggregate dimensions,
+    // so its accepted event is intentionally folded into the hourly counter.
+    expect(rows.map((row) => row.count).sort((a, b) => a - b)).toEqual([1, 1, 2]);
     const serialized = JSON.stringify(rows);
     expect(serialized).not.toContain("device_");
     expect(serialized).not.toContain("user_");
@@ -109,7 +109,6 @@ describe("POST /v1/client/telemetry", () => {
 
   it("按设备凭据限制批次频率", async () => {
     const limitedToken = await register("telemetry-rate-limit");
-    await activateTestDevice(baseUrl, "longhub-dev-admin", limitedToken);
     const batch = { schema_version: CLIENT_TELEMETRY_SCHEMA, events: [event()] };
     for (let index = 0; index < 120; index += 1) {
       expect((await submit(limitedToken, batch)).status).toBe(202);

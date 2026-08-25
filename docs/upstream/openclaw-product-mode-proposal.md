@@ -1,5 +1,8 @@
 # OpenClaw 可嵌入产品模式扩展提案（待外部提交）
 
+> 历史/废弃：本文研究的是旧的内嵌 OpenClaw 页面路线，不属于 clean-launch 首发方案，也不应据此
+> 修改 Manager 或重新开放 OpenClaw Control UI。
+
 ## 背景
 
 LongHub 直接复用 OpenClaw 原生 `/chat`，不构建平行聊天面板。当前品牌、普通用户导航、固定模型和

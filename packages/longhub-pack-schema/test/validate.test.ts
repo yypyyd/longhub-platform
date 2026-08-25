@@ -6,7 +6,7 @@ const valid = {
   pack: {
     id: "longhub.hr-suite",
     version: "1.3.0",
-    minDesktopVersion: "1.0.0",
+    minManagerVersion: "1.0.0",
   },
   agentTemplate: {
     id: "longhub.agent.hr",

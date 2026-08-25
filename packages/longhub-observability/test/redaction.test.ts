@@ -41,7 +41,7 @@ describe("日志脱敏", () => {
 
   it("Logger 输出固定元数据且 Error 不携带秘密", () => {
     const lines: string[] = [];
-    const logger = createConsoleLogger("desktop", {
+    const logger = createConsoleLogger("manager", {
       sink: (line) => lines.push(line),
       now: () => new Date("2026-07-29T00:00:00.000Z"),
       sensitiveValues: () => [GATEWAY_TOKEN],
@@ -64,7 +64,7 @@ describe("日志脱敏", () => {
       upstream: `unlabelled=${REDACTED_LOG_VALUE}`,
       ts: "2026-07-29T00:00:00.000Z",
       level: "error",
-      component: "desktop",
+      component: "manager",
       event: "gateway.failed",
     });
   });

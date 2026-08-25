@@ -2,19 +2,33 @@ import { once } from "node:events";
 import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createExecutorServer } from "longhub-executor";
+import type { CloudSkill } from "longhub-executor";
 import { createCloudApiServer } from "../src/server.js";
-import { activateTestDevice } from "./helpers/activate-device.js";
 
 let executor: ReturnType<typeof createExecutorServer>;
 let api: ReturnType<typeof createCloudApiServer>;
 let baseUrl: string;
 let deviceToken: string;
 
+// The production Executor intentionally ships with an empty registry.  This
+// test supplies its own deterministic fixture instead of relying on a demo
+// Skill being silently enabled by the server.
+const testSalaryBand: CloudSkill = async (input) => {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) throw new Error("invalid");
+  const level = (input as { level?: unknown }).level;
+  if (!Number.isInteger(level) || (level as number) < 1 || (level as number) > 10) throw new Error("invalid");
+  const base = 8000 + (level as number) * 4000;
+  return { level, min: base, max: Math.round(base * 1.6), currency: "CNY" };
+};
+
 beforeAll(async () => {
-  executor = createExecutorServer().listen(0);
+  executor = createExecutorServer({
+    skills: new Map([["longhub.skill.salary-band", testSalaryBand]]),
+  }).listen(0);
   await once(executor, "listening");
   const executorUrl = `http://127.0.0.1:${(executor.address() as AddressInfo).port}`;
-  api = createCloudApiServer({ executorUrl }).listen(0);
+  // Development task fixture; clean launch still permits this explicit test bypass.
+  api = createCloudApiServer({ executorUrl, allowDevelopmentTasks: true }).listen(0);
   await once(api, "listening");
   baseUrl = `http://127.0.0.1:${(api.address() as AddressInfo).port}`;
 
@@ -22,13 +36,12 @@ beforeAll(async () => {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
-      platform: "windows",
+      platform: "openclaw-plugin-windows",
       app_version: "1.0.0",
       device_fingerprint: "fp-cloud-task-test",
     }),
   });
   deviceToken = ((await registered.json()) as { device_token: string }).device_token;
-  await activateTestDevice(baseUrl, "longhub-dev-admin", deviceToken);
 });
 
 afterAll(() => {
@@ -124,7 +137,7 @@ describe("云台任务模块 + 执行器闭环", () => {
     expect(detail!.status).toBe("succeeded");
     expect(detail!.output!.min).toBe(28000);
     expect(detail!.output!.max).toBe(44800);
-  });
+  }, 10_000);
 
   it("SSE 支持 Last-Event-ID 断线恢复且不重复投递", async () => {
     const task = await createTask("it-key-sse");

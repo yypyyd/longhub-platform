@@ -49,6 +49,7 @@ OpenClaw runtime context 不能抵御本机管理员、被篡改的 OpenClaw 或
 | 2026-07-29 | 使用随机令牌保护的回环 HTTP POC | 跨 Gateway 与 Electron/Core 进程，易测试且不开放局域网接口 |
 | 2026-07-29 | Core 增加独立 `bridge.execute` | 现有 `task.submit` 允许调用方传权限，不适合作为 Bridge 安全入口 |
 | 2026-07-29 | 第一版只开放简历初筛 | 避免写操作绕过确认，并避免 JD 工具递归进入同一 OpenClaw Agent |
+| 2026-07-30 | 录用通知书作为确认中心写载体 | 用真实生产 ToolCall 验收展示绑定、等待、批准、拒绝和重放 |
 
 ## 安全措施
 
@@ -63,6 +64,6 @@ OpenClaw runtime context 不能抵御本机管理员、被篡改的 OpenClaw 或
 ## 后续演进
 
 - `LH-036-06`：授权撤销和 Pack 停用实时更新 Core policy，不依赖重启。
-- 写工具：接入 OpenClaw/LongHub 原生确认交互后再开放 `offer_letter`。
+- 新写工具：必须先提供受信展示声明、Feature Policy 在线门禁和确认中心真实 E2E。
 - L2 工具：为 JD 起草设计非递归执行路径；不得从当前 HR 工具再次创建同一 HR Agent 会话。
 - 生产加固：代码签名、插件制品摘要验证、凭据迁移和日志脱敏。

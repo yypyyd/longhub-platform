@@ -12,13 +12,15 @@ LongHub 的本地执行内核，负责白名单 RPC、任务状态、技能调�
 - 计算 Profile、Pack、entitlement、租户、设备、确认和预算的执行交集。
 - 接受 Desktop 生命周期协调器原子替换当前有效 Bridge policy；停用 Agent 的旧会话立即失去授权。
 - 将最终权限和收敛后的预算传给隔离 Skill Worker。
+- 对写权限 Skill 只接受签名内置声明，由 Core 从已绑定业务参数计算动作、对象、接收方、数据范围和
+  费用展示载荷；展示载荷与 Agent/Profile/Session/ToolCall/权限/参数摘要一起绑定并一次性消费。
 - 拒绝未知 RPC 方法及调用方提交的权限。
 
 不负责 OpenClaw UI、Pack 下载、签名校验或云端策略配置；这些由 Desktop 和 Cloud API 负责，
 Core 只消费经过验证的静态声明并在执行前复验动态授权。
 
-后续受限 Workflow 与多 Agent DAG 仍以 Core 为最终边界：每个子 Skill 分别复验身份、授权、预算与
-确认，跨 Agent 摘要不继承来源权限或记忆。规划见
+受限 Workflow 已以 Core 为最终边界：静态验证后的每个子 Skill 分别复验身份、授权、预算与确认，
+执行记录按 workflow/run/step 幂等；跨 Agent 摘要不继承来源权限或记忆。规划与验收见
 [普通用户功能开放策略](../../PRODUCT_FEATURE_POLICY.md) 和
 [Skill 开放设计](../../SKILL_PLATFORM.md)；任务顺序以
 [V2 执行计划](../../EXECUTION_PLAN_V2.md) 为准。

@@ -33,7 +33,8 @@ export function createLongHubBridgeClient(options: LongHubBridgeClientOptions): 
           "content-type": "application/json",
         },
         body: JSON.stringify(request),
-        signal: AbortSignal.timeout(options.timeoutMs ?? 65_000),
+        // 写操作的确认记录最长五分钟；本机 HTTP 超时必须略晚于确认 TTL。
+        signal: AbortSignal.timeout(options.timeoutMs ?? 310_000),
       });
       const body = (await response.json()) as BridgeExecuteResponse;
       if (!response.ok || !body.ok) {

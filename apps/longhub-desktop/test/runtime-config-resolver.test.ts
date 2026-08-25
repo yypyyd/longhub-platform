@@ -30,7 +30,7 @@ const runtime = {
   context_window: 128_000,
   max_tokens: 8_192,
   allow_user_model_selection: false as const,
-  compatible_desktop: { min_version: "0.0.0" },
+  compatible_manager: { min_version: "0.0.0" },
   product: { assistant_name: "龙枢助手", assistant_avatar_path: "/assets/longhub-avatar.png", welcome_message: "你好，我是龙枢助手。", quick_tasks: [] },
   features: { agent_catalog: true, file_upload: true, tool_execution: true },
 };

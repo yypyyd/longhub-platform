@@ -36,6 +36,10 @@ export function openClawProductUiScript(runtime?: OpenClawProductRuntimePolicy):
       sessionLinks: SELECTORS.sessionLinks,
       runStatusLabels: SELECTORS.runStatusLabels,
       productTextRoots: SELECTORS.productTextRoots,
+      agentsPage: SELECTORS.agentsPage,
+      agentsPanelProperty: SELECTORS.agentsPanelProperty,
+      agentsSelectPanelMethod: SELECTORS.agentsSelectPanelMethod,
+      ordinaryUserAgentPanels: SELECTORS.ordinaryUserAgentPanels,
     },
   }).replace(/</g, "\\u003c");
 
@@ -55,6 +59,20 @@ export function openClawProductUiScript(runtime?: OpenClawProductRuntimePolicy):
     let applying = false;
     let scheduled = false;
     let observer;
+
+    const constrainAgentsPage = () => {
+      const page = document.querySelector(config.selectors.agentsPage);
+      if (!page) return;
+      const allowedPanels = new Set(config.selectors.ordinaryUserAgentPanels);
+      const method = config.selectors.agentsSelectPanelMethod;
+      const property = config.selectors.agentsPanelProperty;
+      if (page.dataset.longhubAgentPanels !== "v1" && typeof page[method] === "function") {
+        const original = page[method].bind(page);
+        page[method] = (panel) => original(allowedPanels.has(panel) ? panel : "overview");
+        page.dataset.longhubAgentPanels = "v1";
+      }
+      if (!allowedPanels.has(page[property])) page[method]?.("overview");
+    };
 
     const translateValue = (raw) => {
       const value = normalize(raw);
@@ -93,6 +111,7 @@ export function openClawProductUiScript(runtime?: OpenClawProductRuntimePolicy):
         document.documentElement.lang = config.locale;
         document.documentElement.dataset.longhubProductUi = "v1";
         document.title = config.documentTitle;
+        constrainAgentsPage();
 
         for (const query of config.selectors.brandText) {
           for (const element of document.querySelectorAll(query)) {

@@ -1,5 +1,9 @@
 # LongHub 一键智能体切换设计
 
+> 历史/废弃：本文只保留旧 Electron、Agent Pack 和内嵌 Control UI 的研究与验证资料，不是当前产品、构建、
+> 测试、部署、销售或兼容方案。当前 clean-launch 方案请以 [README.md](README.md)、[DESIGN.md](DESIGN.md) 和
+> [EXECUTION_PLAN_V2.md](EXECUTION_PLAN_V2.md) 为准；当前首发使用免费的 `apps/longhub-manager`，不接入本文路线。
+>
 > 状态：Agent Profile V1、双 Agent 激活、Tool Bridge、权限交集、Selector 与一键安装 E2E 已实现  
 > 基线：LongHub Desktop 0.3.5，开发目标 0.3.6 / OpenClaw 2026.7.1-2  
 > 更新日期：2026-07-29

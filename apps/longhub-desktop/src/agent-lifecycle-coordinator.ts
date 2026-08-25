@@ -42,6 +42,7 @@ export interface AgentLifecycleCoordinatorOptions {
   gateway: OpenClawGatewayClient;
   eligibility: PackEligibilitySource;
   initialBridgePolicy: BridgeExecutionPolicy;
+  constrainBridgePolicy?: (policy: BridgeExecutionPolicy) => BridgeExecutionPolicy;
   replaceBridgePolicy: (policy: BridgeExecutionPolicy) => Promise<void>;
   pollIntervalMs?: number;
   onAgentsChanged?: (agents: readonly { id: string; label: string }[]) => void;
@@ -92,9 +93,20 @@ export class AgentLifecycleCoordinator {
   private queue: Promise<void> = Promise.resolve();
   private pollTimer: NodeJS.Timeout | undefined;
   private bridgePolicy: BridgeExecutionPolicy;
+  private sourceBridgePolicy: BridgeExecutionPolicy;
 
   constructor(private readonly options: AgentLifecycleCoordinatorOptions) {
-    this.bridgePolicy = options.initialBridgePolicy;
+    this.sourceBridgePolicy = options.initialBridgePolicy;
+    this.bridgePolicy = options.constrainBridgePolicy?.(options.initialBridgePolicy)
+      ?? options.initialBridgePolicy;
+  }
+
+  async refreshBridgePolicyConstraint(): Promise<void> {
+    const next = this.options.constrainBridgePolicy?.(this.sourceBridgePolicy)
+      ?? this.sourceBridgePolicy;
+    if (isDeepStrictEqual(next, this.bridgePolicy)) return;
+    await this.options.replaceBridgePolicy(next);
+    this.bridgePolicy = next;
   }
 
   enablePack(packId: string, installContext = this.options.installContext): Promise<PackLifecycleResult> {
@@ -220,6 +232,7 @@ export class AgentLifecycleCoordinator {
     let gatewayWriteAttempted = false;
     let bridgePolicyWriteAttempted = false;
     const previousBridgePolicy = this.bridgePolicy;
+    const previousSourceBridgePolicy = this.sourceBridgePolicy;
     try {
       mutate();
       const profiles = activateInstalledAgentProfiles({
@@ -233,7 +246,9 @@ export class AgentLifecycleCoordinator {
       });
       const nextAgents = agentsFromConfig(candidate) as OpenClawAgentEntry[];
       const expectedIds = agentIds(nextAgents);
-      const nextBridgePolicy = buildToolBridgePolicy(profiles);
+      const nextSourceBridgePolicy = buildToolBridgePolicy(profiles);
+      const nextBridgePolicy = this.options.constrainBridgePolicy?.(nextSourceBridgePolicy)
+        ?? nextSourceBridgePolicy;
       // 撤销/停用先关闭 Core 执行边界，再从可见 Selector 移除。
       bridgePolicyWriteAttempted = true;
       await this.options.replaceBridgePolicy(nextBridgePolicy);
@@ -248,6 +263,7 @@ export class AgentLifecycleCoordinator {
       }
       const removed = previousAgentIds.filter((id) => id !== "main" && !expectedIds.includes(id));
       this.bridgePolicy = nextBridgePolicy;
+      this.sourceBridgePolicy = nextSourceBridgePolicy;
       this.options.onAgentsChanged?.(nextAgents.map((agent) => ({
         id: agent.id,
         label: agent.identity.name || agent.name,
@@ -258,6 +274,7 @@ export class AgentLifecycleCoordinator {
       try {
         if (gatewayWriteAttempted) await this.rollbackGatewayAgents(previousAgents);
         if (bridgePolicyWriteAttempted) await this.options.replaceBridgePolicy(previousBridgePolicy);
+        this.sourceBridgePolicy = previousSourceBridgePolicy;
         this.restoreRegistry(registrySnapshot);
       } catch (rollbackError) {
         throw new PackLifecycleError(

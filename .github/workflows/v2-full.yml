@@ -1,0 +1,33 @@
+name: Clean-launch Full Regression
+
+on:
+  schedule:
+    - cron: "43 18 * * 0"
+  workflow_dispatch:
+
+concurrency:
+  group: clean-launch-full
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  full:
+    name: Current Cloud, Portal, Admin and Manager regression
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24.x"
+          cache: false
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.22.3
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm ci:full
+      - run: node scripts/run-ci-tier.mjs manager-test

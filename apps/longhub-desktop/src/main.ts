@@ -2,33 +2,58 @@
  * Electron Main：拉起 OpenClaw Gateway 与 LongHub Core，创建安全隔离窗口并直接
  * 加载 OpenClaw Control UI；保留 LongHub 白名单 IPC 供后续原生扩展使用。
  */
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { release as osRelease } from "node:os";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { randomBytes } from "node:crypto";
+import { copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
+import { createHash, randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { app, BrowserWindow, dialog, ipcMain, powerMonitor } from "electron";
-import type { BridgeExecutionPolicy } from "@longhub/core";
-import { verifyClientUpdateMetadata } from "@longhub/pack-schema";
-import { inspectOpenClawInstallation } from "@longhub/openclaw-compat";
+import { BoundedWorkflowEngine, newWorkflowRunId, type BridgeExecutionPolicy } from "@longhub/core";
+import { verifyClientUpdateMetadata, verifySkillPackageSignature, type BoundedWorkflow } from "@longhub/pack-schema";
+import {
+  PRODUCT_EXTENSION_ENTRY_IDS,
+  inspectOpenClawInstallation,
+  parseProductExtensionEntryUrl,
+  type ProductExtensionEntryId,
+} from "@longhub/openclaw-compat";
 import {
   createConsoleLogger,
   redactLogText,
   type ClientGatewayState,
   type ClientProductErrorCode,
 } from "@longhub/observability";
-import { CoreClient } from "./core-client.js";
+import { CoreClient, CoreRequestError } from "./core-client.js";
 import { DesktopApp, type SubmitTaskParams } from "./desktop-app.js";
 import { DeviceCredentialStore } from "./device-credential-store.js";
 import { composeOpenClawAgentConfig, type AgentConfigComposerOptions } from "./agent-config-composer.js";
 import { parseAgentPackInstallUrl } from "./agent-install-navigation.js";
 import { AgentLifecycleCoordinator } from "./agent-lifecycle-coordinator.js";
+import { AgentManagementService } from "./agent-management-service.js";
 import { discoverInstallableAgentPacks, type InstallableAgentPack } from "./agent-pack-catalog.js";
 import {
   activateInstalledAgentProfiles,
   BUNDLED_OPENCLAW_VERSION,
 } from "./agent-runtime-activation.js";
 import { AgentRegistry } from "./agent-registry.js";
+import { SkillRegistry } from "./skill-registry.js";
+import { SkillCatalogClient } from "./skill-catalog-client.js";
+import { BUILTIN_WORKER_IMPLEMENTATIONS } from "./skill-runtime-policy.js";
+import { SkillCenterService } from "./skill-center-service.js";
+import { loadDevelopmentSkillTrustedKeys, loadSkillTrustPolicy } from "./skill-trust-policy.js";
+import { resolveModelInputCapabilities } from "./model-input-capabilities.js";
+import { SessionManagementService, RecoverableSessionTrash } from "./session-management.js";
+import { LocalPersonalProfileStore } from "./local-personal-profile.js";
+import { AgentKnowledgeClient } from "./knowledge-client.js";
+import { UserDataCenterService } from "./user-data-center-service.js";
+import { FileCapabilityStore } from "./file-capability.js";
+import { IsolatedFileParser } from "./isolated-file-parser.js";
+import { NoCodeWorkspaceService } from "./nocode-workspace-service.js";
+import { importOpenClawContentSkill } from "./openclaw-content-importer.js";
+import {
+  SkillLifecycleCoordinator,
+  type CoreSkillGrant,
+  type GatewaySkillView,
+} from "./skill-lifecycle-coordinator.js";
 import { GatewaySupervisor, recoverStaleOpenClawStartupLease, resolveGatewayPort } from "./gateway-supervisor.js";
 import { GatewayRuntimeRecovery, waitForGatewayChatPage } from "./gateway-runtime-recovery.js";
 import { OpenClawCliGatewayTransport, OpenClawGatewayConfigClient } from "./openclaw-gateway-client.js";
@@ -41,13 +66,17 @@ import {
   initializeOpenClawWorkspace,
 } from "./openclaw-runtime.js";
 import { resolveClientRuntimeConfig } from "./runtime-config-resolver.js";
+import { FeaturePolicyCoordinator } from "./feature-policy-coordinator.js";
+import {
+  ProductExtensionWindowCoordinator,
+  registerProductExtensionScheme,
+} from "./product-extension-window.js";
 import {
   isAllowedOpenClawNavigation,
-  isForbiddenOpenClawRoute,
   OPENCLAW_PRODUCT_CSS,
 } from "./openclaw-product-policy.js";
 import { installOpenClawProductUi } from "./openclaw-product-ui.js";
-import { installOpenClawSelectorPolicy } from "./openclaw-selector-policy.js";
+import { installOpenClawSelectorPolicy, selectOpenClawAgent } from "./openclaw-selector-policy.js";
 import { ToolBridgeHost, type ToolBridgeConnection } from "./tool-bridge-host.js";
 import { buildToolBridgePolicy } from "./tool-bridge-policy.js";
 import { showActivationWindow } from "./activation-window.js";
@@ -115,6 +144,7 @@ const diagnosticState = new DesktopDiagnosticState({
 /** 默认云端地址；可用 LONGHUB_CLOUD_URL 环境变量覆盖 */
 const DEFAULT_CLOUD_URL = process.env.LONGHUB_CLOUD_URL ?? "https://154-9-26-158.sslip.io";
 const dirname = fileURLToPath(new URL(".", import.meta.url));
+registerProductExtensionScheme();
 
 function rememberLogSecret(value: string | undefined): void {
   if (value && value.length >= 8) logSecrets.add(value);
@@ -148,6 +178,14 @@ function telemetryGatewayState(phase: string): ClientGatewayState | undefined {
   return ["starting", "running", "restarting", "failed", "stopped"].includes(phase)
     ? phase as ClientGatewayState
     : undefined;
+}
+
+/** Skill 信任锚由客户端发布流程预置；目录返回的在线公钥不能自举信任。 */
+function loadSkillTrustedKeys(): ReadonlyMap<string, string> {
+  const policy = loadSkillTrustPolicy(join(app.getAppPath(), "assets", "skill-trusted-keys.json"));
+  if (app.isPackaged) return policy.trustedKeys;
+  const development = loadDevelopmentSkillTrustedKeys(process.env.LONGHUB_SKILL_TRUSTED_KEYS_JSON);
+  return development.size > 0 ? development : policy.trustedKeys;
 }
 
 function telemetryProductCode(code: ProductStatusCode): ClientProductErrorCode {
@@ -255,7 +293,8 @@ function toolBridgePluginPath(): string {
       app.getAppPath(),
       join("node_modules", "@longhub", "openclaw-bridge"),
     );
-    if (!existsSync(join(packaged, "openclaw.plugin.json")) || !existsSync(join(packaged, "dist", "index.js"))) {
+    if (!existsSync(join(packaged, "openclaw.plugin.json")) || !existsSync(join(packaged, "index.js")) ||
+      !existsSync(join(packaged, "dist", "index.js"))) {
       throw new Error("安装包内 LongHub Tool Bridge 插件不完整");
     }
     return packaged;
@@ -265,10 +304,31 @@ function toolBridgePluginPath(): string {
     join(dirname, "..", "..", "..", "packages", "longhub-openclaw-bridge"),
   ];
   const found = candidates.find((candidate) =>
-    existsSync(join(candidate, "openclaw.plugin.json")) && existsSync(join(candidate, "dist", "index.js")),
+    existsSync(join(candidate, "openclaw.plugin.json")) && existsSync(join(candidate, "index.js")) &&
+    existsSync(join(candidate, "dist", "index.js")) && existsSync(join(candidate, "node_modules", "typebox")),
   );
   if (!found) throw new Error("未找到已构建的 LongHub Tool Bridge 插件");
-  return found;
+  const digest = createHash("sha256")
+    .update(readFileSync(join(found, "openclaw.plugin.json")))
+    .update(readFileSync(join(found, "index.js")))
+    .update(readFileSync(join(found, "dist", "index.js")))
+    .digest("hex").slice(0, 16);
+  const target = join(app.getPath("userData"), "product-plugins", `longhub-tool-bridge-${digest}`);
+  if (existsSync(join(target, "openclaw.plugin.json")) && existsSync(join(target, "index.js")) &&
+    existsSync(join(target, "dist", "index.js")) && existsSync(join(target, "node_modules", "typebox"))) return target;
+  const temporary = `${target}.tmp-${process.pid}-${randomBytes(4).toString("hex")}`;
+  mkdirSync(join(temporary, "dist"), { recursive: true, mode: 0o700 });
+  mkdirSync(join(temporary, "node_modules"), { recursive: true, mode: 0o700 });
+  for (const file of ["package.json", "openclaw.plugin.json", "index.js"]) {
+    copyFileSync(join(found, file), join(temporary, file));
+  }
+  cpSync(join(found, "dist"), join(temporary, "dist"), { recursive: true, dereference: true });
+  cpSync(join(found, "node_modules", "typebox"), join(temporary, "node_modules", "typebox"), {
+    recursive: true,
+    dereference: true,
+  });
+  renameSync(temporary, target);
+  return target;
 }
 
 async function prepareOpenClawRuntime(installer: PackInstaller): Promise<OpenClawRuntimeFiles> {
@@ -304,10 +364,16 @@ async function prepareOpenClawRuntime(installer: PackInstaller): Promise<OpenCla
   mkdirSync(join(stateDir, "agents", "main", "sessions"), { recursive: true });
   const registry = new AgentRegistry(join(app.getPath("userData"), "agent-registry.json"));
   const profiles = activateInstalledAgentProfiles({ installer, registry, stateDir });
-  const baseConfig = buildOpenClawConfig(DEFAULT_CLOUD_URL, runtime, workspaceDir);
+  const modelCapabilities = await resolveModelInputCapabilities({
+    baseUrl: DEFAULT_CLOUD_URL,
+    deviceToken: credentials.deviceToken,
+  });
+  const baseConfig = buildOpenClawConfig(DEFAULT_CLOUD_URL, runtime, workspaceDir, modelCapabilities.input);
+  const mainAvatarDataUrl = `data:image/png;base64,${readFileSync(avatarPath).toString("base64")}`;
   const composer: Omit<AgentConfigComposerOptions, "profiles"> = {
     stateDir,
     mainWorkspaceDir: workspaceDir,
+    mainAvatarDataUrl,
     desktopVersion: DESKTOP_VERSION,
     openclawVersion: BUNDLED_OPENCLAW_VERSION,
     modelPolicies: { "longhub.model.default": `${runtime.provider_id}/${runtime.model_id}` },
@@ -335,7 +401,7 @@ async function prepareOpenClawRuntime(installer: PackInstaller): Promise<OpenCla
     productPolicy: {
       assistant_name: runtime.product.assistant_name,
       welcome_message: runtime.product.welcome_message,
-      assistant_avatar_data_url: `data:image/png;base64,${readFileSync(avatarPath).toString("base64")}`,
+      assistant_avatar_data_url: mainAvatarDataUrl,
     },
     features: runtime.features,
   };
@@ -475,6 +541,20 @@ let catalogTimer: NodeJS.Timeout | undefined;
 let updateTimer: NodeJS.Timeout | undefined;
 let updateHealthTimer: NodeJS.Timeout | undefined;
 let updateCoordinator: ClientUpdateCoordinator | undefined;
+let featurePolicyCoordinator: FeaturePolicyCoordinator | undefined;
+let productExtensionWindows: ProductExtensionWindowCoordinator | undefined;
+let agentManagementService: AgentManagementService | undefined;
+let skillCenterService: SkillCenterService | undefined;
+let userDataCenterService: UserDataCenterService | undefined;
+let noCodeWorkspaceService: NoCodeWorkspaceService | undefined;
+let installedSkillCorePolicy: readonly CoreSkillGrant[] = [];
+let installedGatewaySkills: readonly GatewaySkillView[] = [];
+let removeConfirmationListener: (() => void) | undefined;
+let refreshBridgePolicyConstraint: (() => Promise<void>) | undefined;
+const confirmationWaiters = new Map<
+  string,
+  { promise: Promise<boolean>; resolve: (approved: boolean) => void; timer: NodeJS.Timeout }
+>();
 let updateRecovery: ClientUpdateRecoveryStore | undefined;
 let updatePolicy: ClientUpdateTrustPolicy | undefined;
 let updateChecksStarted = false;
@@ -484,6 +564,32 @@ let powerResumeHandler: (() => void) | undefined;
 let rollbackInFlight: Promise<void> | undefined;
 let diagnosticExportInFlight = false;
 
+function settleConfirmationWaiter(toolCallId: string, approved: boolean): void {
+  const waiter = confirmationWaiters.get(toolCallId);
+  if (!waiter) return;
+  confirmationWaiters.delete(toolCallId);
+  clearTimeout(waiter.timer);
+  waiter.resolve(approved);
+}
+
+function registerConfirmationWaiter(toolCallId: string, expiresAt: string): void {
+  settleConfirmationWaiter(toolCallId, false);
+  let resolvePromise!: (approved: boolean) => void;
+  const promise = new Promise<boolean>((resolve) => {
+    resolvePromise = resolve;
+  });
+  const timer = setTimeout(
+    () => settleConfirmationWaiter(toolCallId, false),
+    Math.max(1, Date.parse(expiresAt) - Date.now()),
+  );
+  timer.unref();
+  confirmationWaiters.set(toolCallId, { promise, resolve: resolvePromise, timer });
+}
+
+function clearConfirmationWaiters(): void {
+  for (const toolCallId of confirmationWaiters.keys()) settleConfirmationWaiter(toolCallId, false);
+}
+
 async function stopRuntimeForUpdate(): Promise<void> {
   if (runtimeStoppedForUpdate) return;
   runtimeStoppedForUpdate = true;
@@ -491,9 +597,62 @@ async function stopRuntimeForUpdate(): Promise<void> {
   catalogTimer = undefined;
   if (updateTimer) clearTimeout(updateTimer);
   updateTimer = undefined;
+  featurePolicyCoordinator?.stop();
+  featurePolicyCoordinator = undefined;
+  productExtensionWindows?.dispose();
+  productExtensionWindows = undefined;
+  agentManagementService = undefined;
+  skillCenterService = undefined;
+  userDataCenterService = undefined;
+  noCodeWorkspaceService = undefined;
+  installedSkillCorePolicy = [];
+  installedGatewaySkills = [];
+  removeConfirmationListener?.();
+  removeConfirmationListener = undefined;
+  clearConfirmationWaiters();
+  refreshBridgePolicyConstraint = undefined;
   desktopApp?.stop();
   await gateway?.stop();
   await bridgeHost?.stop();
+}
+
+const PRODUCT_EXTENSION_FEATURES = {
+  agents: "agent.catalog",
+  skills: "skill.catalog",
+  account: "memory.user_controls",
+} as const;
+
+function allowedProductExtensionEntries(): readonly ProductExtensionEntryId[] {
+  return PRODUCT_EXTENSION_ENTRY_IDS.filter((entry) =>
+    featurePolicyCoordinator?.decide(PRODUCT_EXTENSION_FEATURES[entry]).allowed === true,
+  );
+}
+
+function constrainBridgePolicy(policy: BridgeExecutionPolicy): BridgeExecutionPolicy {
+  const writeAllowed = featurePolicyCoordinator?.current()?.source === "network"
+    && featurePolicyCoordinator.decide("skill.catalog").allowed;
+  const managedSkillIds = new Set(
+    [...Object.values(BUILTIN_WORKER_IMPLEMENTATIONS), ...installedSkillCorePolicy.map((grant) => grant.skillId)],
+  );
+  const enabledBindings = new Set(
+    installedSkillCorePolicy.map((grant) => `${grant.agentId}\0${grant.skillId}`),
+  );
+  return Object.fromEntries(Object.entries(policy).map(([agentId, grants]) => [
+    agentId,
+    grants.filter((grant) =>
+      (!grant.confirmation || writeAllowed) &&
+      (!managedSkillIds.has(grant.skillId) || enabledBindings.has(`${agentId}\0${grant.skillId}`))),
+  ]));
+}
+
+function isProductExtensionEntryAllowed(entry: ProductExtensionEntryId): boolean {
+  return allowedProductExtensionEntries().includes(entry);
+}
+
+function syncFeaturePolicyConstraints(): void {
+  productExtensionWindows?.closeDisabledEntries();
+  void refreshBridgePolicyConstraint?.()
+    .catch((error) => logger.warn("feature_policy.bridge_sync_failed", { error }));
 }
 
 async function executeAutomaticClientRollback(reason: string): Promise<void> {
@@ -730,6 +889,7 @@ function createWindow(controlUiUrl?: string, statusCode: ProductStatusCode = "GA
     minHeight: 640,
     title: "龙枢",
     icon: join(dirname, "../assets/longhub-icon.png"),
+    autoHideMenuBar: true,
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -739,6 +899,7 @@ function createWindow(controlUiUrl?: string, statusCode: ProductStatusCode = "GA
   // 主窗口就是 OpenClaw 原生 Control UI，不再套一层 LongHub React 面板。
   // 同时不挂载 LongHub preload，避免上游页面取得本地安装/任务 IPC 权限。
   const targetWindow = mainWindow;
+  targetWindow.removeMenu();
   diagnosticState.recordProductStatus(controlUiUrl ? undefined : statusCode);
   if (!controlUiUrl) telemetry?.recordProductError(telemetryProductCode(statusCode));
   const chatUrl = controlUiUrl ? new URL(controlUiUrl) : undefined;
@@ -751,6 +912,16 @@ function createWindow(controlUiUrl?: string, statusCode: ProductStatusCode = "GA
     if (!chatUrl) {
       event.preventDefault();
       return;
+    }
+    try {
+      const entry = parseProductExtensionEntryUrl(target);
+      event.preventDefault();
+      void productExtensionWindows?.open(entry).catch((error) => {
+        logger.warn("product_extension.open_failed", { entry, error });
+      });
+      return;
+    } catch {
+      // 非产品入口继续交给既有安装、诊断和同源导航策略处理。
     }
     const installRequest = parseAgentPackInstallUrl(target);
     if (installRequest) {
@@ -768,7 +939,7 @@ function createWindow(controlUiUrl?: string, statusCode: ProductStatusCode = "GA
   if (controlUiUrl) {
     let healthyReported = false;
     targetWindow.webContents.on("did-navigate-in-page", (_event, target) => {
-      if (isForbiddenOpenClawRoute(target, chatUrl!.toString())) void targetWindow.loadURL(chatUrl!.toString());
+      if (!isAllowedOpenClawNavigation(target, chatUrl!.toString())) void targetWindow.loadURL(chatUrl!.toString());
     });
     targetWindow.webContents.on("did-finish-load", () => {
       if (!isAllowedOpenClawNavigation(targetWindow.webContents.getURL(), chatUrl!.toString())) return;
@@ -890,7 +1061,106 @@ app.whenReady().then(async () => {
       app.quit();
       return;
     }
-    const deviceToken = await deviceTokenFor(DEFAULT_CLOUD_URL);
+    const credentials = await deviceCredentialsFor(DEFAULT_CLOUD_URL);
+    const deviceToken = credentials.deviceToken;
+    featurePolicyCoordinator = new FeaturePolicyCoordinator({
+      cloudBaseUrl: DEFAULT_CLOUD_URL,
+      deviceId: credentials.deviceId,
+      deviceToken: credentials.deviceToken,
+      desktopVersion: DESKTOP_VERSION,
+      cacheFile: join(app.getPath("userData"), "openclaw", "feature-policy-cache.json"),
+      onEmergencyDisabled(featureIds) {
+        logger.warn("feature_policy.emergency_disabled", { feature_ids: featureIds });
+        syncFeaturePolicyConstraints();
+      },
+      onRefresh(snapshot) {
+        logger.info("feature_policy.refreshed", {
+          policy_version: snapshot.document.policy_version,
+          source: snapshot.source,
+          feature_count: snapshot.document.features.length,
+        });
+        syncFeaturePolicyConstraints();
+      },
+      onError(error) {
+        logger.warn("feature_policy.refresh_failed", { code: error.code, reason: error.reason });
+      },
+    });
+    void featurePolicyCoordinator.refresh().catch((error) => {
+      logger.warn("feature_policy.initial_refresh_failed", {
+        code: error instanceof Error && "code" in error ? error.code : "FEATURE_POLICY_UNAVAILABLE",
+      });
+    });
+    featurePolicyCoordinator.startPolling();
+    productExtensionWindows = new ProductExtensionWindowCoordinator({
+      assetsDir: join(app.getAppPath(), "assets"),
+      preloadPath: join(dirname, "product-extension-preload.cjs"),
+      iconPath: join(dirname, "../assets/longhub-icon.png"),
+      parentWindow: () => mainWindow,
+      isEntryAllowed: isProductExtensionEntryAllowed,
+      agentCenter: {
+        read: () => {
+          if (!agentManagementService) throw new Error("智能体中心尚未就绪");
+          return agentManagementService.read();
+        },
+        perform: (params) => {
+          if (!agentManagementService) throw new Error("智能体中心尚未就绪");
+          return agentManagementService.perform(params);
+        },
+      },
+      skillCenter: {
+        read: () => {
+          if (!skillCenterService) throw new Error("能力中心尚未就绪");
+          return skillCenterService.read();
+        },
+        perform: (params) => {
+          if (!skillCenterService) throw new Error("能力中心尚未就绪");
+          return skillCenterService.perform(params);
+        },
+      },
+      dataCenter: {
+        read: (agentId) => {
+          if (!userDataCenterService) throw new Error("用户数据中心尚未就绪");
+          return userDataCenterService.read(agentId);
+        },
+        perform: (params) => {
+          if (!userDataCenterService) throw new Error("用户数据中心尚未就绪");
+          return userDataCenterService.perform(params);
+        },
+      },
+      noCodeCenter: {
+        read: () => {
+          if (!noCodeWorkspaceService) throw new Error("无代码工作台尚未就绪");
+          return noCodeWorkspaceService.read();
+        },
+        perform: (params) => {
+          if (!noCodeWorkspaceService) throw new Error("无代码工作台尚未就绪");
+          return noCodeWorkspaceService.perform(params);
+        },
+      },
+      onDenied(entry) {
+        logger.warn("product_extension.open_denied", { entry });
+      },
+      async respondConfirmation(request, approved) {
+        if (!core) throw new Error("LongHub Core 尚未就绪");
+        try {
+          await core.request("confirm.respond", {
+            confirmationId: request.confirmationId,
+            approved,
+          });
+          settleConfirmationWaiter(request.toolCallId, approved);
+        } catch (error) {
+          settleConfirmationWaiter(request.toolCallId, false);
+          throw error;
+        }
+        logger.info("confirmation.responded", {
+          confirmation_id: request.confirmationId,
+          agent_id: request.agentId,
+          skill_id: request.skillId,
+          approved,
+        });
+      },
+    });
+    await productExtensionWindows.start();
     if (process.platform === "win32" && (process.arch === "x64" || process.arch === "arm64")) {
       telemetry = new ClientTelemetryReporter({
         baseUrl: DEFAULT_CLOUD_URL,
@@ -931,7 +1201,20 @@ app.whenReady().then(async () => {
         token: bridgeToken,
         async execute(request) {
           if (!core) throw new Error("LongHub Core 尚未就绪");
-          return core.request("bridge.execute", { ...request });
+          try {
+            return await core.request("bridge.execute", { ...request });
+          } catch (error) {
+            if (!(error instanceof CoreRequestError) || error.code !== "BRIDGE_CONFIRMATION_REQUIRED") {
+              throw error;
+            }
+            const waiter = confirmationWaiters.get(request.context.toolCallId);
+            if (!waiter || !(await waiter.promise)) {
+              throw Object.assign(new Error("用户拒绝、关闭或确认已过期"), {
+                code: "BRIDGE_FORBIDDEN",
+              });
+            }
+            return core.request("bridge.execute", { ...request });
+          }
         },
       });
       bridgeConnection = await bridgeHost.start();
@@ -1007,10 +1290,10 @@ app.whenReady().then(async () => {
     env: {
       ...process.env,
       ELECTRON_RUN_AS_NODE: "1",
-      LONGHUB_BRIDGE_POLICY: JSON.stringify(runtime?.bridgePolicy ?? {}),
+      LONGHUB_BRIDGE_POLICY: JSON.stringify(constrainBridgePolicy(runtime?.bridgePolicy ?? {})),
       LONGHUB_CLOUD_URL: DEFAULT_CLOUD_URL,
       LONGHUB_DEVICE_TOKEN: runtime?.modelToken ?? "",
-      LONGHUB_DESKTOP_VERSION: DESKTOP_VERSION,
+      LONGHUB_MANAGER_VERSION: DESKTOP_VERSION,
       ...(gatewayConnection
         ? {
             OPENCLAW_GATEWAY_URL: gatewayConnection.wsUrl,
@@ -1022,24 +1305,27 @@ app.whenReady().then(async () => {
     },
   });
   const trustedKeys = loadTrustedKeys();
-  const lifecycle = runtime && gatewayConnection && gateway
+  const gatewayTransport = runtime && gatewayConnection && gateway
     ? (() => {
         const nodeExecutable = nodeRuntimePath();
         const entryScript = openclawEntryPath();
         if (!nodeExecutable || !entryScript) return undefined;
-        const gatewayClient = new OpenClawGatewayConfigClient(
-          new OpenClawCliGatewayTransport({
-            nodeExecutable,
-            entryScript,
-            wsUrl: gatewayConnection.wsUrl,
-            token: gatewayConnection.token,
-            env: {
-              OPENCLAW_STATE_DIR: runtime.stateDir,
-              OPENCLAW_CONFIG_PATH: runtime.configPath,
-              LONGHUB_MODEL_TOKEN: runtime.modelToken,
-            },
-          }),
-        );
+        return new OpenClawCliGatewayTransport({
+          nodeExecutable,
+          entryScript,
+          wsUrl: gatewayConnection.wsUrl,
+          token: gatewayConnection.token,
+          env: {
+            OPENCLAW_STATE_DIR: runtime.stateDir,
+            OPENCLAW_CONFIG_PATH: runtime.configPath,
+            LONGHUB_MODEL_TOKEN: runtime.modelToken,
+          },
+        });
+      })()
+    : undefined;
+  const lifecycle = runtime && gatewayTransport
+    ? (() => {
+        const gatewayClient = new OpenClawGatewayConfigClient(gatewayTransport);
         return new AgentLifecycleCoordinator({
           installer,
           registry: runtime.registry,
@@ -1054,6 +1340,7 @@ app.whenReady().then(async () => {
             desktopVersion: DESKTOP_VERSION,
           }),
           initialBridgePolicy: runtime.bridgePolicy,
+          constrainBridgePolicy,
           async replaceBridgePolicy(policy) {
             if (!core) throw new Error("LongHub Core 尚未就绪");
             await core.request("bridge.policy.replace", policy as Record<string, unknown>);
@@ -1076,11 +1363,285 @@ app.whenReady().then(async () => {
         });
       })()
     : undefined;
+  if (runtime) {
+    agentManagementService = new AgentManagementService({
+      currentAgentId: () => {
+        if (!mainWindow || mainWindow.isDestroyed()) return "main";
+        try {
+          const session = new URL(mainWindow.webContents.getURL()).searchParams.get("session") ?? "";
+          return /^agent:([^:]+):/i.exec(session)?.[1]?.toLowerCase() ?? "main";
+        } catch {
+          return "main";
+        }
+      },
+      agents: () => [
+        { agentId: "main", name: agentLabels.main ?? "龙枢助手", enabled: true, builtIn: true },
+        ...runtime.registry.list().map((entry) => ({
+          agentId: entry.agentId,
+          name: agentLabels[entry.agentId] ?? entry.profileId,
+          packId: entry.packId,
+          enabled: entry.enabled,
+          builtIn: false,
+        })),
+      ],
+      installableAgents: () => installableAgents,
+      async selectAgent(agentId) {
+        if (!mainWindow || mainWindow.isDestroyed() || !await selectOpenClawAgent(mainWindow.webContents, agentId)) {
+          throw new Error("OpenClaw 智能体切换器当前不可用");
+        }
+      },
+      installAgent: provisionAgentPack,
+      async enableAgent(packId) {
+        if (!lifecycle) throw new Error("智能体生命周期当前不可用");
+        await lifecycle.enablePack(packId);
+      },
+      async disableAgent(packId) {
+        if (!lifecycle) throw new Error("智能体生命周期当前不可用");
+        await lifecycle.disablePack(packId);
+      },
+    });
+  }
+  refreshBridgePolicyConstraint = lifecycle
+    ? () => lifecycle.refreshBridgePolicyConstraint()
+    : undefined;
+  if (runtime && currentDeviceId) {
+    const skillRegistry = new SkillRegistry(
+      join(app.getPath("userData"), "skills", "skill-registry.json"),
+      `${DEFAULT_CLOUD_URL}\0${currentDeviceId}`,
+    );
+    const skillTrustedKeys = loadSkillTrustedKeys();
+    const skillCatalog = new SkillCatalogClient({
+      baseUrl: DEFAULT_CLOUD_URL,
+      deviceToken: runtime.modelToken,
+      openclawVersion: BUNDLED_OPENCLAW_VERSION,
+      trustedKeys: skillTrustedKeys,
+    });
+    const skillLifecycle = new SkillLifecycleCoordinator({
+      registry: skillRegistry,
+      verifyPackage: async (manifest) => {
+        const publicKey = skillTrustedKeys.get(manifest.integrity.signatureKeyId);
+        if (!publicKey || !verifySkillPackageSignature(manifest, publicKey)) {
+          throw new Error("Skill 引用签名不受当前客户端信任");
+        }
+      },
+      verifyEntitlement: async (skillId, version) => {
+        try {
+          await skillCatalog.reference(skillId, version);
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      readCorePolicy: async () => structuredClone(installedSkillCorePolicy),
+      replaceCorePolicy: async (policy) => {
+        installedSkillCorePolicy = structuredClone(policy);
+        await refreshBridgePolicyConstraint?.();
+      },
+      readGatewaySkills: async () => structuredClone(installedGatewaySkills),
+      replaceGatewaySkills: async (skills) => {
+        installedGatewaySkills = structuredClone(skills);
+      },
+    });
+    skillCenterService = new SkillCenterService({
+      catalog: skillCatalog,
+      registry: skillRegistry,
+      lifecycle: skillLifecycle,
+      agents: () => runtime.registry.list().filter((entry) => entry.enabled).map((entry) => ({
+        profileId: entry.profileId,
+        agentId: entry.agentId,
+        name: agentLabels[entry.agentId] ?? entry.profileId,
+      })),
+    });
+    if (gatewayTransport) {
+      const sessionService = new SessionManagementService(gatewayTransport);
+      const personalProfile = new LocalPersonalProfileStore(
+        join(app.getPath("userData"), "personal-profile.json"),
+        `${DEFAULT_CLOUD_URL}\0${currentDeviceId}\0${app.getPath("userData")}`,
+      );
+      const fileCapabilities = new FileCapabilityStore(join(app.getPath("userData"), "attachments", "staging"));
+      const parserNode = nodeRuntimePath();
+      const fileParser = parserNode ? new IsolatedFileParser({
+        nodeExecutable: parserNode,
+        workerScript: join(dirname, "file-parser-worker.js"),
+      }) : undefined;
+      userDataCenterService = new UserDataCenterService({
+        agents: () => runtime.registry.list().filter((entry) => entry.enabled).map((entry) => ({
+          agentId: entry.agentId,
+          name: agentLabels[entry.agentId] ?? entry.profileId,
+        })),
+        sessions: sessionService,
+        trash: new RecoverableSessionTrash(
+          join(app.getPath("userData"), "sessions", "trash.json"),
+          sessionService,
+        ),
+        personal: personalProfile,
+        knowledge: new AgentKnowledgeClient({
+          baseUrl: DEFAULT_CLOUD_URL,
+          deviceToken: runtime.modelToken,
+        }),
+        attachments: {
+          async selectAndParse(agentId, sessionId) {
+            if (!fileParser) throw new Error("隔离文件解析器不可用");
+            const selected = await dialog.showOpenDialog({
+              title: "选择要提供给当前智能体的文本附件",
+              properties: ["openFile", "multiSelections"],
+              filters: [{ name: "安全文本附件", extensions: ["txt", "md", "json", "csv"] }],
+            });
+            if (selected.canceled || selected.filePaths.length === 0) return [];
+            const context = { agentId, sessionId };
+            const handles = fileCapabilities.issueFromTrustedPicker(selected.filePaths, context);
+            const previews = [];
+            try {
+              for (const handle of handles) {
+                const consumed = fileCapabilities.consume(handle.handleId, context);
+                const parsed = await fileParser.parse(consumed.stagedPath);
+                previews.push({ filename: handle.filename, ...parsed });
+              }
+              return previews;
+            } finally {
+              for (const handle of handles) fileCapabilities.cancel(handle.handleId, context);
+            }
+          },
+        },
+      });
+      const workspaceAgents = () => runtime.registry.list().filter((entry) => entry.enabled).map((entry) => ({
+        agentId: entry.agentId,
+        profileId: entry.profileId,
+        name: agentLabels[entry.agentId] ?? entry.profileId,
+      }));
+      const effectiveBridgeGrants = (agentId: string) => constrainBridgePolicy(runtime.bridgePolicy)[agentId] ?? [];
+      let workspaceService!: NoCodeWorkspaceService;
+      noCodeWorkspaceService = workspaceService = new NoCodeWorkspaceService({
+        stateFile: join(app.getPath("userData"), "nocode", "workspace.json"),
+        owner: `${DEFAULT_CLOUD_URL}\0${currentDeviceId}\0${app.getPath("userData")}`,
+        agents: workspaceAgents,
+        personalEntryIds: (agentId) => personalProfile.list(agentId).map((entry) => entry.entryId),
+        authorizedSkillIds: (agentId) => [
+          ...new Set([
+            ...effectiveBridgeGrants(agentId).map((grant) => grant.skillId),
+            ...installedSkillCorePolicy.filter((grant) => grant.agentId === agentId).map((grant) => grant.skillId),
+          ]),
+        ],
+        async runWorkflow(workflow: BoundedWorkflow, agentId: string) {
+          const grants = new Map(effectiveBridgeGrants(agentId).map((grant) => [grant.skillId, grant]));
+          const engine = new BoundedWorkflowEngine({
+            async describeSkill(skillId) {
+              if (skillId.startsWith("user.skill.")) {
+                workspaceService.contentSkillInstructions(skillId);
+                return { sideEffect: "none", requiresConfirmation: false };
+              }
+              const grant = grants.get(skillId);
+              if (!grant) throw new Error("Workflow 子 Skill 未通过当前 Core policy");
+              const externalWrite = grant.requiredPermissions.some((permission) =>
+                /(?:^|:)(?:write|delete|send|pay|admin)(?:$|:)/i.test(permission));
+              return { sideEffect: externalWrite ? "external_write" : "none", requiresConfirmation: false };
+            },
+            async requestConfirmation(input) {
+              const target = BrowserWindow.getFocusedWindow() ?? mainWindow;
+              const options: Electron.MessageBoxOptions = {
+                type: "question",
+                title: "Workflow 步骤确认 - 龙枢",
+                message: input.title,
+                detail: `${input.summary}\n\n目标智能体：${input.agentId}\n步骤：${input.stepId}`,
+                buttons: ["取消", "确认执行"],
+                defaultId: 0,
+                cancelId: 0,
+                noLink: true,
+              };
+              const result = target && !target.isDestroyed()
+                ? await dialog.showMessageBox(target, options)
+                : await dialog.showMessageBox(options);
+              return result.response === 1;
+            },
+            async authorizeAndExecute(input) {
+              if (input.skillId.startsWith("user.skill.")) {
+                return { output: { instructions: workspaceService.contentSkillInstructions(input.skillId) }, costMicros: 0 };
+              }
+              const grant = grants.get(input.skillId);
+              if (!grant || !core) throw new Error("Workflow 子 Skill 当前不可用");
+              const request = {
+                skillId: input.skillId,
+                input: input.payload,
+                context: {
+                  agentId,
+                  sessionKey: `workflow:${input.runId}`,
+                  sessionId: input.runId,
+                  toolCallId: input.idempotencyKey,
+                },
+              };
+              let output: unknown;
+              try {
+                output = await core.request("bridge.execute", request);
+              } catch (error) {
+                if (!(error instanceof CoreRequestError) || error.code !== "BRIDGE_CONFIRMATION_REQUIRED") throw error;
+                const waiter = confirmationWaiters.get(input.idempotencyKey);
+                if (!waiter || !(await waiter.promise)) throw new Error("Workflow 子步骤未获用户确认");
+                output = await core.request("bridge.execute", request);
+              }
+              return { output, costMicros: Math.max(0, grant.budget.maxCostCents * 10_000) };
+            },
+          });
+          return engine.execute(workflow, {
+            runId: newWorkflowRunId(),
+            agentId,
+            input: {},
+            maxCostMicros: 100_000_000,
+            maxDurationMs: 5 * 60_000,
+          });
+        },
+        async selectOpenClawContent() {
+          const selected = await dialog.showOpenDialog({
+            title: "选择纯内容 OpenClaw Skill 的 SKILL.md",
+            properties: ["openFile"],
+            filters: [{ name: "OpenClaw 纯内容 Skill", extensions: ["md"] }],
+          });
+          if (selected.canceled || selected.filePaths.length !== 1) return undefined;
+          const source = selected.filePaths[0]!;
+          const stat = lstatSync(source);
+          if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 256 * 1024 ||
+            realpathSync.native(source).toLowerCase() !== source.toLowerCase() || basename(source).toLowerCase() !== "skill.md") {
+            throw new Error("OpenClaw Content Skill 入口无效");
+          }
+          return importOpenClawContentSkill({ "SKILL.md": readFileSync(source) });
+        },
+      });
+    }
+  }
   desktopApp = new DesktopApp(core, installer, {
     trustedKeys,
     desktopVersion: DESKTOP_VERSION,
   }, lifecycle, { persistTrustedKey });
   desktopApp.start();
+  await refreshBridgePolicyConstraint?.();
+  removeConfirmationListener = core.onConfirmationRequest((request) => {
+    registerConfirmationWaiter(request.toolCallId, request.expiresAt);
+    void (async () => {
+      const opened = await productExtensionWindows?.openConfirmation(request) ?? false;
+      if (!opened) {
+        await core?.request("confirm.respond", {
+          confirmationId: request.confirmationId,
+          approved: false,
+        });
+        settleConfirmationWaiter(request.toolCallId, false);
+      }
+    })().catch(async (error) => {
+      logger.warn("confirmation.open_failed", {
+        confirmation_id: request.confirmationId,
+        agent_id: request.agentId,
+        skill_id: request.skillId,
+        error,
+      });
+      try {
+        await core?.request("confirm.respond", {
+          confirmationId: request.confirmationId,
+          approved: false,
+        });
+      } catch {
+        // Core 不可用时确认天然无法执行；保持 fail-closed。
+      }
+      settleConfirmationWaiter(request.toolCallId, false);
+    });
+  });
   if (
     updateRecovery && updatePolicy?.status === "approved" && updatePolicy.expected_signer_subject && currentDeviceId &&
     (app.isPackaged || process.env.LONGHUB_ENABLE_CLIENT_UPDATE === "1")
@@ -1217,6 +1778,15 @@ app.on("will-quit", () => {
   if (updateTimer) clearTimeout(updateTimer);
   if (updateHealthTimer) clearTimeout(updateHealthTimer);
   if (powerResumeHandler) powerMonitor.removeListener("resume", powerResumeHandler);
+  featurePolicyCoordinator?.stop();
+  featurePolicyCoordinator = undefined;
+  productExtensionWindows?.dispose();
+  productExtensionWindows = undefined;
+  agentManagementService = undefined;
+  removeConfirmationListener?.();
+  removeConfirmationListener = undefined;
+  clearConfirmationWaiters();
+  refreshBridgePolicyConstraint = undefined;
   desktopApp?.stop();
   telemetry?.stop();
   void gateway?.stop();

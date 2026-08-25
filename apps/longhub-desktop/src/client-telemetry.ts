@@ -108,7 +108,7 @@ export class ClientTelemetryReporter {
     }
     const common = {
       occurred_at: (this.options.now ?? (() => new Date()))().toISOString(),
-      desktop_version: this.options.desktopVersion,
+      manager_version: this.options.desktopVersion,
       openclaw_version: this.options.openClawVersion,
       platform: this.options.platform,
       architecture: this.options.architecture,

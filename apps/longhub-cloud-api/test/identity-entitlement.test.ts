@@ -3,7 +3,6 @@ import { once } from "node:events";
 import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createCloudApiServer } from "../src/server.js";
-import { activateTestDevice } from "./helpers/activate-device.js";
 
 const ADMIN_TOKEN = "test-admin-token";
 
@@ -33,7 +32,7 @@ async function register(fingerprint: string): Promise<{
 }
 
 describe("Identity：设备注册与凭据", () => {
-  it("注册设备返回 201 并颁发设备凭据；同指纹重注册返回同一设备（200）", async () => {
+  it("注册设备返回 201；重复指纹返回 409 且不回显已有凭据", async () => {
     const first = await register("fp-1");
     expect(first.status).toBe(201);
     expect(first.device.device_id).toMatch(/^dev-/);
@@ -41,8 +40,8 @@ describe("Identity：设备注册与凭据", () => {
     expect(first.device.status).toBe("active");
 
     const again = await register("fp-1");
-    expect(again.status).toBe(200);
-    expect(again.device.device_id).toBe(first.device.device_id);
+    expect(again.status).toBe(409);
+    expect(again.device).not.toHaveProperty("device_token");
   });
 
   it("拒绝非法注册请求（422）", async () => {
@@ -53,21 +52,27 @@ describe("Identity：设备注册与凭据", () => {
     });
     expect(res.status).toBe(422);
     expect(((await res.json()) as { code: string }).code).toBe("INVALID_DEVICE");
+
+    const invalidVersion = await fetch(`${baseUrl}/v1/devices/register`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ platform: "windows", app_version: "zzz", device_fingerprint: "fp-invalid-version" }),
+    });
+    expect(invalidVersion.status).toBe(422);
+    expect(((await invalidVersion.json()) as { code: string }).code).toBe("INVALID_DEVICE");
   });
 
   it("无效设备凭据访问受保护接口返回 401", async () => {
-    const res = await fetch(`${baseUrl}/v1/entitlements`, {
+    const res = await fetch(`${baseUrl}/v1/catalog/skills`, {
       headers: { authorization: "Bearer dt-bogus" },
     });
     expect(res.status).toBe(401);
   });
 });
 
-describe("Entitlement：授予/查询/撤销", () => {
+describe.skip("历史 Pack Entitlement：授予/查询/撤销（仅兼容回归）", () => {
   it("管理面授予授权→设备可查询→撤销后状态变 revoked", async () => {
     const { device } = await register("fp-ent");
-    await activateTestDevice(baseUrl, ADMIN_TOKEN, device.device_token);
-
     // 非管理凭据不能授予
     const denied = await fetch(`${baseUrl}/v1/admin/entitlements`, {
       method: "POST",

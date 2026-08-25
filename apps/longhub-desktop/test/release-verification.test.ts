@@ -9,6 +9,7 @@ import {
   validateSignatureRecord,
   verifyBrandAssets,
   verifyClientUpdateTrust,
+  verifySkillTrust,
 } from "../scripts/release-verification.mjs";
 import {
   externalRuntimeUnpackPatterns,
@@ -56,6 +57,24 @@ describe("Windows 正式发布门禁", () => {
     })).toThrow("主体不一致");
   });
 
+  it("内部候选可携带 pending Skill 信任清单，正式发布必须预置审批公钥", () => {
+    expect(verifySkillTrust(appRoot)).toMatchObject({ status: "pending", keys: [] });
+    expect(() => verifySkillTrust(appRoot, { requireApproved: true })).toThrow("审批通过");
+
+    const copyRoot = join(root, "skill-trust-approved");
+    mkdirSync(join(copyRoot, "assets"), { recursive: true });
+    const publicKey = generateKeyPairSync("ed25519").publicKey
+      .export({ type: "spki", format: "pem" }).toString();
+    writeFileSync(join(copyRoot, "assets", "skill-trusted-keys.json"), JSON.stringify({
+      schema_version: "longhub/skill-trust/v1",
+      status: "approved",
+      approved_by: "release-security",
+      approved_at: "2026-07-31T00:00:00.000Z",
+      keys: [{ key_id: "skill-2026", public_key_pem: publicKey }],
+    }));
+    expect(verifySkillTrust(copyRoot, { requireApproved: true })).toMatchObject({ status: "approved" });
+  });
+
   it("品牌资产被替换但未更新审批清单时拒绝", () => {
     const copyRoot = join(root, "brand-drift");
     mkdirSync(join(copyRoot, "assets"), { recursive: true });
@@ -99,6 +118,17 @@ describe("Windows 正式发布门禁", () => {
     expect(existsSync(join(appRoot, "src", "activation-preload.cts"))).toBe(true);
     expect(mainSource).toContain('preloadPath: join(dirname, "activation-preload.cjs")');
     expect(mainSource).not.toContain("activation-preload.js");
+  });
+
+  it("产品扩展 preload 保持 CommonJS 且只镜像最小契约", () => {
+    const mainSource = readFileSync(join(appRoot, "src", "main.ts"), "utf8");
+    const preloadSource = readFileSync(join(appRoot, "src", "product-extension-preload.cts"), "utf8");
+    expect(mainSource).toContain('preloadPath: join(dirname, "product-extension-preload.cjs")');
+    expect(preloadSource).toContain('"longhub/product-extension-surface/v2"');
+    expect(preloadSource).toContain('"longhub:extension:context-read"');
+    expect(preloadSource).toContain('"longhub:extension:window-close"');
+    expect(preloadSource).not.toMatch(/child_process|node:fs|node:path|shell\.openExternal/);
+    expect(mainSource).not.toContain("product-extension-preload.js");
   });
 
   it("外置运行时白名单与当前 OpenClaw 生产依赖闭包一致", () => {

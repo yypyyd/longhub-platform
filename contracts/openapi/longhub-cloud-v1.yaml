@@ -1,17 +1,93 @@
 openapi: 3.1.0
 info:
   title: LongHub Cloud API
-  description: 龙枢云台控制面 REST 契约 V1（冻结契约草案）。破坏性变更必须创建新主版本或兼容过渡层。
+  description: >-
+    龙枢 Cloud API REST 契约 V1。当前有效产品表面是 clean launch：免费原生 OpenClaw 管家与 Cloud
+    Skill 订阅；尚未上线，不为旧客户端/旧设备提供迁移承诺。历史 Pack、激活码、钱包和本地模型代理路径
+    保留在契约中仅供审计，并标记为 deprecated；生产 Cloud API 关闭这些表面，也不提供旧数据迁移或
+    兼容入口。首次上线前的破坏性调整直接收敛到本 clean-launch 契约；上线后的破坏性变更必须创建新主版本。
   version: "1.0.0"
+  x-longhub-product-surface: clean-launch
+  x-longhub-deployment-status: not-launched
+  x-longhub-legacy-surface: disabled-in-production
+  x-longhub-current-paths:
+    - /health
+    - /devices/register
+    - /client/feature-policy
+    - /client/telemetry
+    - /cloud-skill-plans
+    - /auth/register
+    - /auth/login
+    - /auth/logout
+    - /me
+    - /me/orders
+    - /me/devices
+    - /devices/pairing/challenge
+    - /devices/self
+    - /devices/self/revoke
+    - /me/devices/pair
+    - /me/cloud-skill-subscriptions
+    - /me/cloud-skill-subscriptions/{subscriptionId}/cancel
+    - /me/cloud-skill-entitlements
+    - /orders
+    - /orders/{orderId}/pay
+    - /catalog/skills
+    - /catalog/skills/{skillId}
+    - /skills/{skillId}/adapter
+    - /cloud-skill/bindings
+    - /cloud-skill/bindings/{bindingId}
+    - /tasks
+    - /tasks/{taskId}
+    - /tasks/{taskId}/events
+    - /tasks/{taskId}/cancel
+    - /admin/auth/login
+    - /admin/feature-policies
+    - /admin/cloud-skill-plans
+    - /admin/cloud-skill-plans/{planId}
+    - /admin/cloud-skill-subscriptions
+    - /admin/orders
+    - /admin/orders/{orderId}/refund
+    - /admin/users
+    - /admin/users/{userId}/status
+    - /admin/devices
+    - /admin/devices/{deviceId}
+    - /admin/devices/{deviceId}/rotate-credential
+    - /admin/metrics
+    - /admin/audits
+    - /admin/model-config
+    - /admin/model-policies
+    - /admin/model-usage
+    - /admin/cloud-skill-adapters
+    - /admin/cloud-skill-adapters/{skillId}/{version}/revoke
+    - /skills/adapters/signing-key
+    - /client-releases/latest
+    - /client-releases/signing-key
+    - /client-releases/versions/{version}
+    - /admin/client-releases
+    - /admin/client-releases/{version}/rollout
+    - /cloud-plugin-releases/latest
+    - /cloud-plugin-releases/signing-key
+    - /cloud-plugin-releases/versions/{version}
+    - /cloud-cli-releases/latest
+    - /cloud-cli-releases/signing-key
+    - /cloud-cli-releases/versions/{version}
+    - /admin/cloud-plugin-releases
+    - /admin/cloud-plugin-releases/{version}/rollout
+    - /admin/cloud-plugin-releases/{version}
+    - /admin/cloud-cli-releases
+    - /admin/cloud-cli-releases/{version}/rollout
+    - /admin/cloud-cli-releases/{version}
 servers:
   - url: https://api.longhub.example.com/v1
 tags:
   - name: identity
     description: OIDC、用户、租户、设备
   - name: catalog
-    description: 智能体模板、套装与能力目录
+    description: Cloud Skill 目录（历史套装路径仅供审计，生产关闭）
   - name: entitlement
     description: 租户/用户/设备授权与撤销
+  - name: billing
+    description: Cloud Skill 计划、订阅与执行额度/速率/并发门禁
   - name: release
     description: 版本、渠道、灰度、兼容与吊销
   - name: artifact
@@ -19,20 +95,41 @@ tags:
   - name: task
     description: 云端任务、状态、幂等与事件
   - name: model
-    description: 客户端固定模型配置与 OpenAI 兼容代理
+    description: Cloud Executor 内部模型路由；不控制用户原生 OpenClaw 模型
   - name: telemetry
     description: 严格匿名、仅聚合的客户端运行指标
   - name: knowledge
-    description: 租户隔离知识文档与引用检索
+    description: 历史知识文档与引用检索；不进入 clean-launch 首发
   - name: governance
-    description: 第三方 Pack 安全审核、批准与发布
+    description: 历史制品审核记录；clean launch 不作为销售或安装入口
+  - name: policy
+    description: Feature Policy V2 下发、管理与服务端执行复验
 security:
   - bearerAuth: []
 paths:
+  /health:
+    get:
+      tags: [telemetry]
+      security: []
+      summary: 外部可用率探测；不返回版本、主机或依赖详情
+      operationId: getHealth
+      responses:
+        "200":
+          description: Cloud API 进程可接受请求
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [status]
+                properties:
+                  status: { type: string, const: ok }
   /client/runtime-config:
     get:
       tags: [model]
-      summary: 获取设备的固定 OpenClaw 模型运行配置
+      summary: 【已废弃】获取旧客户端的固定 OpenClaw 模型运行配置
+      deprecated: true
+      description: clean launch 不代理或强制用户原生 OpenClaw 模型；生产旧表面返回 LEGACY_SURFACE_DISABLED。
       operationId: getClientRuntimeConfig
       responses:
         "200":
@@ -43,10 +140,108 @@ paths:
                 $ref: "#/components/schemas/ClientRuntimeConfig"
         default:
           $ref: "#/components/responses/Error"
+  /client/model-capabilities:
+    get:
+      tags: [model]
+      summary: 【已废弃】获取旧客户端固定模型的文本/视觉输入能力
+      deprecated: true
+      description: clean launch 的 Cloud Skill 模型能力由 Executor 内部路由决定，不下发给本地 OpenClaw。
+      operationId: getClientModelCapabilities
+      responses:
+        "200":
+          description: 当前设备实际选定模型的输入能力；客户端失败时降级为 text
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ModelInputCapabilities"
+        default:
+          $ref: "#/components/responses/Error"
+  /client/feature-policy:
+    get:
+      tags: [policy]
+      summary: 获取当前设备适用的 LongHub/Cloud Skill Feature Policy V2
+      description: 仅控制 LongHub 自有页面与 Cloud Skill 目录/任务；不得限制用户原生 OpenClaw 能力。
+      operationId: getClientFeaturePolicy
+      parameters:
+        - name: X-LongHub-Manager-Version
+          in: header
+          required: false
+          description: 已认证设备当前实际运行版本；Cloud 只更新该凭据所属设备的版本记录
+          schema:
+            type: string
+            maxLength: 64
+            pattern: '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$'
+      responses:
+        "200":
+          description: 最长五分钟有效的严格策略文档
+          headers:
+            ETag:
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FeaturePolicyDocument"
+        "304":
+          description: 同一三十秒刷新窗口内策略未变化
+        "422":
+          description: 客户端版本请求头不是受限语义版本
+        "429":
+          description: 公网入口按来源 IP 或全局共享桶限流；客户端按 Retry-After 退避
+          headers:
+            Retry-After:
+              schema: { type: integer, minimum: 1 }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        default:
+          $ref: "#/components/responses/Error"
+  /admin/feature-policies:
+    get:
+      tags: [policy]
+      summary: 管理面列出 Feature Policy V2 记录
+      operationId: listAdminFeaturePolicies
+      responses:
+        "200":
+          description: 策略记录列表
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [policies]
+                properties:
+                  policies:
+                    type: array
+                    maxItems: 64
+                    items: { $ref: "#/components/schemas/FeaturePolicyRecord" }
+        default:
+          $ref: "#/components/responses/Error"
+    post:
+      tags: [policy]
+      summary: 按 feature/audience/scope/target 原子新增或更新策略
+      operationId: upsertAdminFeaturePolicy
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [policy]
+              properties:
+                policy: { $ref: "#/components/schemas/FeaturePolicyEntry" }
+      responses:
+        "200": { description: 已更新 }
+        "201": { description: 已创建 }
+        default:
+          $ref: "#/components/responses/Error"
   /model/models:
     get:
       tags: [model]
-      summary: OpenAI 兼容模型列表；始终只返回 longhub-default
+      summary: 【已废弃】旧客户端 OpenAI 兼容模型列表
+      deprecated: true
+      description: clean launch 不为用户原生 OpenClaw 提供强制模型代理。
       operationId: listClientModels
       responses:
         "200":
@@ -56,7 +251,9 @@ paths:
   /model/chat/completions:
     post:
       tags: [model]
-      summary: 设备鉴权的 Chat Completions 代理；服务端强制覆盖真实模型 ID
+      summary: 【已废弃】旧客户端 Chat Completions 模型代理
+      deprecated: true
+      description: clean launch 不代理用户本地对话；Cloud Skill 只通过 /tasks 进入私网 Executor。
       operationId: proxyChatCompletions
       requestBody:
         required: true
@@ -70,7 +267,9 @@ paths:
   /model/responses:
     post:
       tags: [model]
-      summary: 设备鉴权的 Responses API 代理；服务端强制覆盖真实模型 ID
+      summary: 【已废弃】旧客户端 Responses API 模型代理
+      deprecated: true
+      description: clean launch 不代理用户本地对话；Cloud Skill 只通过 /tasks 进入私网 Executor。
       operationId: proxyResponses
       requestBody:
         required: true
@@ -84,7 +283,8 @@ paths:
   /admin/model-config:
     get:
       tags: [model]
-      summary: 管理面读取默认模型配置（API Key 只返回是否已配置）
+      summary: 管理面读取 Cloud Executor 模型路由（API Key 只返回是否已配置）
+      description: 仅供 LongHub Cloud Skill 私网 Executor 使用；不下发或强制用户原生 OpenClaw 模型。
       operationId: getAdminModelConfig
       responses:
         "200": { description: 模型配置脱敏视图 }
@@ -92,7 +292,8 @@ paths:
           $ref: "#/components/responses/Error"
     post:
       tags: [model]
-      summary: 管理面更新默认模型配置；API Key 加密入库
+      summary: 管理面更新 Cloud Executor 模型路由；API Key 加密入库
+      description: 仅改变云端 Skill 的服务端路由；不改变用户本地 Provider、模型或 Channels。
       operationId: updateAdminModelConfig
       requestBody:
         required: true
@@ -107,7 +308,8 @@ paths:
   /admin/model-policies:
     get:
       tags: [model]
-      summary: 列出 global/tenant/plan/device 模型与产品运行策略
+      summary: 列出 Cloud Executor 的 global/tenant/plan/device 路由策略
+      description: 策略作用于云端任务；不得被解释为用户原生 OpenClaw 的能力开关。
       operationId: listAdminModelPolicies
       responses:
         "200": { description: 不含上游密钥的策略列表 }
@@ -115,7 +317,8 @@ paths:
   /admin/model-usage:
     get:
       tags: [model]
-      summary: 查询设备与租户的日/月模型计量聚合
+      summary: 查询 Cloud Executor 的日/月模型计量聚合
+      description: 只用于云端成本、额度和健康运营，不统计或限制用户本地模型。
       operationId: listAdminModelUsage
       responses:
         "200": { description: 模型 Token、成本和结果聚合 }
@@ -162,7 +365,9 @@ paths:
   /admin/knowledge-documents:
     get:
       tags: [knowledge]
-      summary: 按租户列出知识文档元数据；不返回正文
+      summary: 【已废弃】按租户列出历史知识文档元数据
+      deprecated: true
+      description: clean launch 首发不提供知识库产品面；生产关闭该路径。
       operationId: listKnowledgeDocuments
       parameters:
         - { name: tenant_id, in: query, required: false, schema: { type: string, default: tenant-default } }
@@ -171,7 +376,9 @@ paths:
         default: { $ref: "#/components/responses/Error" }
     post:
       tags: [knowledge]
-      summary: 写入租户知识文档；生产环境使用独立知识数据密钥加密正文
+      summary: 【已废弃】写入历史租户知识文档
+      deprecated: true
+      description: clean launch 首发不接收知识文档；生产关闭该路径。
       operationId: createKnowledgeDocument
       requestBody:
         required: true
@@ -192,7 +399,9 @@ paths:
   /admin/knowledge-documents/{documentId}:
     delete:
       tags: [knowledge]
-      summary: 删除知识文档
+      summary: 【已废弃】删除历史知识文档
+      deprecated: true
+      description: clean launch 首发不提供知识库产品面；生产关闭该路径。
       operationId: deleteKnowledgeDocument
       parameters:
         - { name: documentId, in: path, required: true, schema: { type: string } }
@@ -202,7 +411,9 @@ paths:
   /knowledge/query:
     post:
       tags: [knowledge]
-      summary: 设备在自身租户内检索知识引用片段
+      summary: 【已废弃】检索历史租户知识引用片段
+      deprecated: true
+      description: clean launch 首发不提供知识库产品面；生产关闭该路径。
       operationId: queryTenantKnowledge
       requestBody:
         required: true
@@ -221,14 +432,18 @@ paths:
   /admin/pack-reviews:
     get:
       tags: [governance]
-      summary: 列出第三方 Pack 审核记录；不返回完整 Pack 正文
+      summary: 【已废弃】列出历史第三方 Pack 审核记录
+      deprecated: true
+      description: clean launch 不发布 Pack；仅保留历史审计记录，生产不作为安装或销售入口。
       operationId: listPackReviews
       responses:
         "200": { description: 审核记录与固定扫描发现 }
         default: { $ref: "#/components/responses/Error" }
     post:
       tags: [governance]
-      summary: 提交第三方 Pack，执行 Manifest/Profile 联合校验和固定危险模式扫描
+      summary: 【已废弃】提交历史第三方 Pack 审核
+      deprecated: true
+      description: clean launch 不接受 Pack 制品；生产返回 LEGACY_SURFACE_DISABLED。
       operationId: submitPackReview
       requestBody:
         required: true
@@ -248,7 +463,9 @@ paths:
   /admin/pack-reviews/{reviewId}/approve:
     post:
       tags: [governance]
-      summary: 人工批准后重新校验、平台签名并发布不可覆盖版本
+      summary: 【已废弃】批准历史 Pack 审核并发布
+      deprecated: true
+      description: clean launch 不发布 Pack 版本。
       operationId: approvePackReview
       parameters:
         - { name: reviewId, in: path, required: true, schema: { type: string } }
@@ -259,7 +476,8 @@ paths:
   /devices/register:
     post:
       tags: [identity]
-      summary: 匿名登记设备并颁发待激活设备凭据；注册不代表获得产品使用权
+      summary: 登记设备并颁发设备凭据
+      description: clean launch 的设备注册只建立 Cloud API 身份；不需要产品激活码，也不限制本地 OpenClaw。
       operationId: registerDevice
       security: []
       requestBody:
@@ -279,10 +497,380 @@ paths:
           $ref: "#/components/responses/Error"
         default:
           $ref: "#/components/responses/Error"
+  /devices/pairing/challenge:
+    post:
+      tags: [identity]
+      summary: 由已登记 Cloud Plugin 设备生成一次性账号配对码
+      description: >-
+        只接受设备 Bearer 和空 JSON 对象。配对码有效 10 分钟且仅可消费一次；明文只在本响应中下发，
+        云端仅保存摘要。该接口不能选择其他 device_id、tenant 或有效期。
+      operationId: createDevicePairingChallenge
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+      responses:
+        "201":
+          description: 一次性配对码已生成
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DevicePairingChallenge" }
+        "409": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
+  /devices/self:
+    get:
+      tags: [identity]
+      summary: 查询当前 Cloud Plugin 设备状态
+      description: 只返回当前设备的脱敏元数据、绑定状态和版本，不返回 device_token。
+      operationId: getCurrentDevice
+      responses:
+        "200":
+          description: 当前设备状态
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeviceSelf" }
+        default: { $ref: "#/components/responses/Error" }
+  /devices/self/revoke:
+    post:
+      tags: [identity]
+      summary: 撤销当前 Cloud Plugin 设备凭据
+      description: 只允许 bearer 撤销其自身设备；成功后该 bearer 立即失效并写入审计。
+      operationId: revokeCurrentDevice
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: false }
+      responses:
+        "200":
+          description: 当前设备已撤销
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [device_id, status]
+                properties:
+                  device_id: { type: string }
+                  status: { type: string, const: revoked }
+        default: { $ref: "#/components/responses/Error" }
+  /auth/register:
+    post:
+      tags: [identity]
+      security: []
+      summary: 注册 LongHub Cloud 账号
+      description: 账号只用于 Cloud Skill 目录、设备和订阅；注册不是本地 OpenClaw 的前置条件。
+      operationId: registerAccount
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [email, password]
+              properties:
+                email: { type: string, format: email, maxLength: 320 }
+                password: { type: string, minLength: 8, maxLength: 256, writeOnly: true }
+      responses:
+        "201":
+          description: 账号与会话已创建
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [user, token]
+                properties:
+                  user:
+                    $ref: "#/components/schemas/AccountUser"
+                  token: { type: string, writeOnly: true }
+        "409": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
+  /auth/login:
+    post:
+      tags: [identity]
+      security: []
+      summary: 登录 LongHub Cloud 账号
+      operationId: loginAccount
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [email, password]
+              properties:
+                email: { type: string, format: email, maxLength: 320 }
+                password: { type: string, minLength: 8, maxLength: 256, writeOnly: true }
+      responses:
+        "200":
+          description: 会话已创建
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [user, token]
+                properties:
+                  user: { $ref: "#/components/schemas/AccountUser" }
+                  token: { type: string, writeOnly: true }
+        "401": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
+  /auth/logout:
+    post:
+      tags: [identity]
+      summary: 注销当前 Cloud 会话
+      operationId: logoutAccount
+      responses:
+        "200":
+          description: 会话已注销（重复调用安全幂等）
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [ok]
+                properties:
+                  ok: { type: boolean, const: true }
+        default: { $ref: "#/components/responses/Error" }
+  /me:
+    get:
+      tags: [identity]
+      summary: 查询当前 Cloud 账号
+      operationId: getMe
+      responses:
+        "200":
+          description: 脱敏账号资料；只包含账号标识、邮箱、状态和创建时间
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AccountUser" }
+        default: { $ref: "#/components/responses/Error" }
+  /me/orders:
+    get:
+      tags: [billing]
+      summary: 查询当前账号的 Cloud Skill 订单历史
+      operationId: listMyOrders
+      responses:
+        "200":
+          description: clean launch 仅返回 cloud_skill_plan 订单
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [orders]
+                properties:
+                  orders:
+                    type: array
+                    items: { $ref: "#/components/schemas/Order" }
+        default: { $ref: "#/components/responses/Error" }
+  /me/devices:
+    get:
+      tags: [identity]
+      summary: 查询当前账号已登记的设备
+      operationId: listMyDevices
+      responses:
+        "200":
+          description: 设备列表不返回设备凭据
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [devices]
+                properties:
+                  devices:
+                    type: array
+                    items: { $ref: "#/components/schemas/AccountDevice" }
+        default: { $ref: "#/components/responses/Error" }
+  /me/devices/pair:
+    post:
+      tags: [identity]
+      summary: 使用 Manager 一次性配对码绑定设备
+      description: 不接受 device_id、device_token 或其他长期凭据；消费成功后配对码立即失效。
+      operationId: pairMyDevice
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [pairing_code]
+              properties:
+                pairing_code:
+                  type: string
+                  pattern: '^[A-HJ-NP-Z2-9]{12}$'
+                  minLength: 12
+                  maxLength: 14
+      responses:
+        "200":
+          description: 设备已绑定并返回脱敏设备视图
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [device]
+                properties:
+                  device: { $ref: "#/components/schemas/AccountDevice" }
+        default: { $ref: "#/components/responses/Error" }
+  /admin/metrics:
+    get:
+      tags: [telemetry]
+      summary: 读取近 24 小时匿名运行看板与服务端 SLO 读数
+      operationId: getAdminOperationalMetrics
+      responses:
+        "200":
+          description: 无逐设备身份的聚合指标；无样本值为 null/no_data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OperationalDashboard"
+        default:
+          $ref: "#/components/responses/Error"
+  /admin/orders:
+    get:
+      tags: [billing]
+      summary: 管理面只读 Cloud Skill 订单账本
+      description: clean-launch 服务端过滤历史订单，只返回 type=cloud_skill_plan；不暴露旧商品、钱包或充值记录。
+      operationId: listAdminOrders
+      parameters:
+        - name: user_id
+          in: query
+          required: false
+          schema: { type: string, maxLength: 128 }
+      responses:
+        "200":
+          description: 仅包含 Cloud Skill 订单的脱敏账本
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [orders]
+                properties:
+                  orders:
+                    type: array
+                    items: { $ref: "#/components/schemas/Order" }
+        default: { $ref: "#/components/responses/Error" }
+  /admin/auth/login:
+    post:
+      tags: [identity]
+      security: []
+      summary: 登录 LongHub 运营后台
+      operationId: loginAdmin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [username, password]
+              properties:
+                username: { type: string, minLength: 1, maxLength: 128 }
+                password: { type: string, minLength: 8, maxLength: 256, writeOnly: true }
+      responses:
+        "200":
+          description: 管理会话已创建
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [token, admin]
+                properties:
+                  token: { type: string, writeOnly: true }
+                  admin:
+                    type: object
+                    additionalProperties: false
+                    required: [admin_id, username, role]
+                    properties:
+                      admin_id: { type: string }
+                      username: { type: string }
+                      role: { type: string }
+        "401": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
+  /admin/users:
+    get:
+      tags: [identity]
+      summary: 管理面列出 Cloud 账号
+      operationId: listAdminUsers
+      responses:
+        "200":
+          description: 账号脱敏列表，不包含密码、会话 Token 或本地凭据
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [users]
+                properties:
+                  users:
+                    type: array
+                    items: { $ref: "#/components/schemas/AccountUser" }
+        default: { $ref: "#/components/responses/Error" }
+  /admin/users/{userId}/status:
+    post:
+      tags: [identity]
+      summary: 启用或停用 Cloud 账号
+      operationId: updateAdminUserStatus
+      parameters:
+        - { name: userId, in: path, required: true, schema: { type: string, maxLength: 128 } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [status]
+              properties:
+                status: { type: string, enum: [active, disabled] }
+      responses:
+        "200":
+          description: 账号状态已更新；停用只影响 Cloud 服务，不删除本地 OpenClaw
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [user_id, status]
+                properties:
+                  user_id: { type: string }
+                  status: { type: string, enum: [active, disabled] }
+        default: { $ref: "#/components/responses/Error" }
+  /admin/audits:
+    get:
+      tags: [identity]
+      summary: 查询 Cloud 运营审计记录
+      operationId: listAdminAudits
+      responses:
+        "200":
+          description: 审计记录不含 Token、完整提示词或业务正文
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [audits]
+                properties:
+                  audits:
+                    type: array
+                    items: { type: object }
+        default: { $ref: "#/components/responses/Error" }
   /devices/activation:
     get:
       tags: [identity]
-      summary: 查询当前设备是否已使用有效授权码激活
+      summary: 【已废弃】查询历史授权码激活状态
+      deprecated: true
+      description: clean launch 不使用授权码；生产返回 LEGACY_SURFACE_DISABLED。
       operationId: getDeviceActivation
       responses:
         "200":
@@ -296,7 +884,9 @@ paths:
   /devices/activate:
     post:
       tags: [identity]
-      summary: 核销授权码并绑定当前设备
+      summary: 【已废弃】核销历史授权码
+      deprecated: true
+      description: clean launch 不使用授权码；生产返回 LEGACY_SURFACE_DISABLED。
       operationId: activateDevice
       requestBody:
         required: true
@@ -310,13 +900,21 @@ paths:
       responses:
         "200": { description: 激活成功 }
         "403": { $ref: "#/components/responses/Error" }
-        "429": { $ref: "#/components/responses/Error" }
+        "429":
+          description: 设备级或公网入口 IP/全局限流；客户端按 Retry-After 退避
+          headers:
+            Retry-After:
+              schema: { type: integer, minimum: 1 }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
         default:
           $ref: "#/components/responses/Error"
   /client/telemetry:
     post:
       tags: [telemetry]
-      summary: 接收已激活客户端的严格匿名运行指标并立即聚合
+      summary: 接收已注册设备的严格匿名运行指标并立即聚合
       description: Bearer 仅用于鉴权和限流；请求体禁止身份、聊天、路径、URL、异常或自由文本，服务端不保存逐设备原始事件。
       operationId: submitClientTelemetry
       requestBody:
@@ -337,14 +935,19 @@ paths:
                 properties:
                   accepted: { type: integer, minimum: 1, maximum: 32 }
         "413": { $ref: "#/components/responses/Error" }
-        "422": { $ref: "#/components/responses/Error" }
+        "422":
+          description: 匿名指标不符合固定契约（INVALID_TELEMETRY）
+          content:
+            application/json: { schema: { $ref: "#/components/schemas/ApiError" } }
         "429": { $ref: "#/components/responses/Error" }
         default:
           $ref: "#/components/responses/Error"
   /admin/activation-codes:
     get:
       tags: [identity]
-      summary: 管理面列出授权码脱敏记录
+      summary: 【已废弃】管理面列出历史授权码记录
+      deprecated: true
+      description: clean launch 不创建或管理授权码。
       operationId: listActivationCodes
       responses:
         "200": { description: 不含明文与摘要的授权码列表 }
@@ -352,7 +955,9 @@ paths:
           $ref: "#/components/responses/Error"
     post:
       tags: [identity]
-      summary: 管理面生成授权码；明文只在本次响应返回
+      summary: 【已废弃】管理面生成历史授权码
+      deprecated: true
+      description: clean launch 不创建或管理授权码。
       operationId: createActivationCode
       requestBody:
         required: true
@@ -367,7 +972,9 @@ paths:
   /admin/activation-codes/{activationCodeId}/revoke:
     post:
       tags: [identity]
-      summary: 管理面撤销授权码，并立即阻断绑定设备的产品 API
+      summary: 【已废弃】管理面撤销历史授权码
+      deprecated: true
+      description: clean launch 不创建或管理授权码。
       operationId: revokeActivationCode
       parameters:
         - name: activationCodeId
@@ -381,7 +988,9 @@ paths:
   /catalog/packs:
     get:
       tags: [catalog]
-      summary: 列出当前租户可见的套装
+      summary: 【已废弃】列出历史套装
+      deprecated: true
+      description: clean launch 的目录仅使用 /catalog/skills；生产关闭 Pack 表面。
       operationId: listPacks
       parameters:
         - $ref: "#/components/parameters/PageSize"
@@ -400,7 +1009,9 @@ paths:
   /catalog/packs/{packId}:
     get:
       tags: [catalog]
-      summary: 查看套装详情
+      summary: 【已废弃】查看历史套装详情
+      deprecated: true
+      description: clean launch 的目录仅使用 /catalog/skills；生产关闭 Pack 表面。
       operationId: getPack
       parameters:
         - $ref: "#/components/parameters/PackId"
@@ -415,10 +1026,193 @@ paths:
           $ref: "#/components/responses/Error"
         default:
           $ref: "#/components/responses/Error"
+  /cloud-skill-plans:
+    get:
+      tags: [billing]
+      security: []
+      summary: 返回公开上架的 Cloud Skill 计划
+      description: clean-launch 唯一公开销售目录；只返回 listed 计划的价格、额度和 Skill 元数据，不返回实现或秘密。
+      operationId: listCloudSkillPlans
+      responses:
+        "200":
+          description: 计划价格、Skill allow-list 与限制元数据；不包含实现或秘密
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [plans]
+                properties:
+                  plans:
+                    type: array
+                    items: { $ref: "#/components/schemas/CloudSkillPlan" }
+        default:
+          $ref: "#/components/responses/Error"
+  /orders:
+    post:
+      tags: [billing]
+      summary: 创建 Cloud Skill 订阅订单
+      description: >-
+        clean-launch 只接受 type=cloud_skill_plan；金额由服务端根据已上架的 plan_id 与 period 重算，
+        不信任客户端价格。旧商品、充值和余额流程不属于本端点。
+      operationId: createOrder
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/OrderCreateRequest" }
+      responses:
+        "201":
+          description: 待支付订单
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Order" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422":
+          description: 输入无效（INVALID_ORDER 等）
+          content:
+            application/json: { schema: { $ref: "#/components/schemas/ApiError" } }
+        default: { $ref: "#/components/responses/Error" }
+  /orders/{orderId}/pay:
+    post:
+      tags: [billing]
+      summary: 支付当前账号的待支付订单
+      x-longhub-production-status: payment-provider-pending
+      description: >-
+        仅用于真实支付通道接入后的 Cloud Skill 订单。当前尚未接入正式支付，生产返回
+        PAYMENT_NOT_CONFIGURED；任何开发 fixture 支付方式都不属于对外产品契约，也不得出现在页面。
+      operationId: payOrder
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          schema: { type: string }
+        - name: Idempotency-Key
+          in: header
+          required: false
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 128
+            pattern: '^[!-~]+$'
+          description: 相同订单与请求绑定下可安全重放；缺省时服务端使用订单派生键
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/OrderPaymentRequest" }
+      responses:
+        "200":
+          description: 已支付订单；Cloud Skill 订阅发放必须可重放且只能产生对应 Cloud Skill entitlement
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Order" }
+        "402": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422":
+          description: 正式支付通道接入后的请求参数无效（当前生产不会进入该分支）
+          content:
+            application/json: { schema: { $ref: "#/components/schemas/ApiError" } }
+        "503": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
+  /admin/orders/{orderId}/refund:
+    post:
+      tags: [billing]
+      summary: 管理面退款 Cloud Skill 订单并撤销权益
+      x-longhub-production-status: payment-provider-pending
+      description: >-
+        只处理 clean-launch 的 Cloud Skill 订单；当前尚未接入正式支付退款，生产返回
+        PAYMENT_NOT_CONFIGURED。接入后，退款与 subscription/entitlement 撤销必须在同一事务或可恢复 outbox 中完成。
+      operationId: refundOrder
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          schema: { type: string }
+        - name: Idempotency-Key
+          in: header
+          required: false
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 128
+            pattern: '^[!-~]+$'
+          description: 相同订单退款请求可安全重放；缺省时服务端使用订单派生键
+      responses:
+        "200":
+          description: 已退款订单
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Order" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409":
+          description: 订单状态不可退款或幂等请求与原请求冲突
+          content:
+            application/json: { schema: { $ref: "#/components/schemas/ApiError" } }
+        "503": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
+  /me/cloud-skill-subscriptions:
+    get:
+      tags: [billing]
+      summary: 查询当前账号的 Cloud Skill 订阅
+      operationId: listMyCloudSkillSubscriptions
+      responses:
+        "200":
+          description: 订阅状态列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [subscriptions]
+                properties:
+                  subscriptions:
+                    type: array
+                    items: { $ref: "#/components/schemas/CloudSkillSubscription" }
+        default:
+          $ref: "#/components/responses/Error"
+  /me/cloud-skill-subscriptions/{subscriptionId}/cancel:
+    post:
+      tags: [billing]
+      summary: 取消当前账号的 Cloud Skill 订阅并立即阻断新执行
+      operationId: cancelMyCloudSkillSubscription
+      parameters:
+        - name: subscriptionId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: 订阅已取消
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CloudSkillSubscription" }
+        default:
+          $ref: "#/components/responses/Error"
+  /me/cloud-skill-entitlements:
+    get:
+      tags: [billing]
+      summary: 查询当前账号的 Cloud Skill entitlement
+      operationId: listMyCloudSkillEntitlements
+      responses:
+        "200":
+          description: 按 skill_id + plan_id 记录的授权列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [entitlements]
+                properties:
+                  entitlements:
+                    type: array
+                    items: { $ref: "#/components/schemas/CloudSkillEntitlement" }
+        default:
+          $ref: "#/components/responses/Error"
   /entitlements:
     get:
       tags: [entitlement]
-      summary: 查询当前用户/设备的有效授权
+      summary: 【已废弃】查询历史 Pack 授权
+      deprecated: true
+      description: clean launch 使用 /me/cloud-skill-entitlements；本路径生产关闭。
       operationId: listEntitlements
       responses:
         "200":
@@ -440,7 +1234,9 @@ paths:
   /admin/entitlements:
     post:
       tags: [entitlement]
-      summary: 管理面：为设备授予套装授权（Console 使用管理凭据）
+      summary: 【已废弃】管理面授予历史 Pack 授权
+      deprecated: true
+      description: clean launch 的 Cloud Skill entitlement 由订阅发放，不由此路径手工创建。
       operationId: grantEntitlement
       requestBody:
         required: true
@@ -471,7 +1267,9 @@ paths:
   /admin/entitlements/{entitlementId}/revoke:
     post:
       tags: [entitlement]
-      summary: 管理面：撤销授权
+      summary: 【已废弃】管理面撤销历史 Pack 授权
+      deprecated: true
+      description: clean launch 的 Cloud Skill entitlement 由订阅取消、退款或 Skill 撤回处理。
       operationId: revokeEntitlement
       parameters:
         - name: entitlementId
@@ -493,7 +1291,9 @@ paths:
   /releases/check:
     post:
       tags: [release]
-      summary: 检查客户端与已装套装的可用升级和吊销状态
+      summary: 【已废弃】检查旧客户端与历史套装升级/吊销状态
+      deprecated: true
+      description: clean launch 的 Manager 更新使用 /client-releases/*；适配器状态使用目录和 adapter 端点。
       operationId: checkReleases
       requestBody:
         required: true
@@ -512,11 +1312,198 @@ paths:
           $ref: "#/components/responses/Error"
         default:
           $ref: "#/components/responses/Error"
+  /cloud-skill/bindings:
+    get:
+      tags: [billing]
+      summary: 列出当前 registered device 上的 Cloud Skill Agent 绑定
+      description: clean-launch 绑定只关联原生 OpenClaw Agent 与 Cloud Skill entitlement，不改变本地其它能力。
+      operationId: listCloudSkillBindings
+      responses:
+        "200":
+          description: 仅返回当前设备/租户拥有的 server-owned binding
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [bindings]
+                properties:
+                  bindings:
+                    type: array
+                    items: { $ref: "#/components/schemas/CloudAgentSkillBinding" }
+        default: { $ref: "#/components/responses/Error" }
+    post:
+      tags: [billing]
+      summary: 为当前设备的原生 OpenClaw Agent 绑定 Cloud Skill
+      description: 绑定是云端执行准入的一部分；每次 /tasks 仍会重新校验订阅、版本、Agent 和设备。
+      operationId: upsertCloudSkillBinding
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [agent_id, skill_id]
+              properties:
+                agent_id: { $ref: "#/components/schemas/TaskAgentIdValue" }
+                skill_id: { type: string }
+                user_id: { type: string }
+      responses:
+        "200":
+          description: 已存在且保持不变的绑定
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CloudAgentSkillBindingEnvelope" }
+        "201":
+          description: 新建绑定
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CloudAgentSkillBindingEnvelope" }
+        default: { $ref: "#/components/responses/Error" }
+  /cloud-skill/bindings/{bindingId}:
+    delete:
+      tags: [billing]
+      summary: 撤销当前设备拥有的 Cloud Skill Agent 绑定
+      description: 撤销只阻断对应 Cloud Skill 任务，不停止或修改用户原生 OpenClaw。
+      operationId: revokeCloudSkillBinding
+      parameters:
+        - { name: bindingId, in: path, required: true, schema: { type: string, maxLength: 128 } }
+      responses:
+        "200":
+          description: 绑定已撤销
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CloudAgentSkillBindingEnvelope" }
+        default: { $ref: "#/components/responses/Error" }
+  /admin/cloud-skill-plans:
+    get:
+      tags: [billing]
+      summary: 管理面列出全部 Cloud Skill 计划
+      operationId: listAdminCloudSkillPlans
+      responses:
+        "200":
+          description: 包括未上架计划
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [plans]
+                properties:
+                  plans:
+                    type: array
+                    items: { $ref: "#/components/schemas/CloudSkillPlan" }
+        default:
+          $ref: "#/components/responses/Error"
+    post:
+      tags: [billing]
+      summary: 管理面创建 Cloud Skill 计划
+      operationId: createAdminCloudSkillPlan
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CloudSkillPlanInput" }
+      responses:
+        "201":
+          description: 计划已创建
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CloudSkillPlan" }
+        default:
+          $ref: "#/components/responses/Error"
+  /admin/cloud-skill-plans/{planId}:
+    post:
+      tags: [billing]
+      summary: 管理面更新 Cloud Skill 计划
+      operationId: updateAdminCloudSkillPlan
+      parameters:
+        - name: planId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CloudSkillPlanPatch" }
+      responses:
+        "200":
+          description: 计划已更新
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CloudSkillPlan" }
+        default:
+          $ref: "#/components/responses/Error"
+  /admin/cloud-skill-subscriptions:
+    get:
+      tags: [billing]
+      summary: 管理面列出 Cloud Skill 订阅
+      operationId: listAdminCloudSkillSubscriptions
+      responses:
+        "200":
+          description: 订阅列表
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [subscriptions]
+                properties:
+                  subscriptions:
+                    type: array
+                    items: { $ref: "#/components/schemas/CloudSkillSubscription" }
+        default:
+          $ref: "#/components/responses/Error"
+  /catalog/skills:
+    get:
+      tags: [catalog]
+      summary: 列出策略允许且与当前 Manager/OpenClaw 兼容的 Cloud Skill 适配器
+      description: >-
+        设备视角的免费目录；只返回已注册设备可见、未撤回且兼容的 Cloud Skill 元数据。Feature Policy
+        作用于目录和云端任务，不限制用户原生 OpenClaw 的其它 Skill、插件或模型。
+      operationId: listSkills
+      parameters:
+        - { name: q, in: query, required: false, schema: { type: string } }
+        - { name: category, in: query, required: false, schema: { type: string } }
+        - { name: openclaw_version, in: query, required: false, schema: { type: string } }
+      responses:
+        "200":
+          description: 未撤销的兼容 Skill 列表；entitled 仅表示可取得引用，不表示执行授权
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillCatalogList"
+        default: { $ref: "#/components/responses/Error" }
+  /catalog/skills/{skillId}:
+    get:
+      tags: [catalog]
+      summary: 查看策略允许且兼容的 Cloud Skill 详情
+      description: 不下发签名适配器正文；需要下载时使用 /skills/{skillId}/adapter 并再次校验订阅权益。
+      operationId: getSkill
+      parameters:
+        - { name: skillId, in: path, required: true, schema: { type: string } }
+        - { name: openclaw_version, in: query, required: false, schema: { type: string } }
+      responses:
+        "200":
+          description: Skill 详情
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [skill]
+                properties:
+                  skill: { $ref: "#/components/schemas/SkillCatalogItem" }
+        default: { $ref: "#/components/responses/Error" }
   /client-releases/latest:
     get:
       tags: [release, artifact]
-      summary: 获取最新的严格签名 Windows 客户端更新元数据
-      description: 返回值仅供使用安装包内预置信任公钥的客户端验签；不得通过 signing-key 接口自举信任。
+      summary: 获取最新的严格签名 Windows LongHub Manager 更新元数据
+      description: >-
+        只返回 product_surface=longhub-manager 的发布；Manager 使用安装包内预置公钥验签，不得通过
+        signing-key 接口自举信任。
       operationId: getLatestClientRelease
       security: []
       parameters:
@@ -546,13 +1533,13 @@ paths:
   /client-releases/signing-key:
     get:
       tags: [artifact]
-      summary: 获取当前客户端更新签名公钥，仅供运维核对与轮换发现
-      description: Desktop 不得信任本响应建立根信任；正式信任公钥必须在构建时预置。
+      summary: 获取当前 Manager 更新签名公钥，仅供运维核对与轮换发现
+      description: LongHub Manager 不得信任本响应建立根信任；正式信任公钥必须在构建时预置。
       operationId: getClientUpdateSigningKey
       security: []
       responses:
         "200":
-          description: 当前客户端更新签名公钥
+          description: 当前 LongHub Manager 更新签名公钥
           content:
             application/json:
               schema:
@@ -562,8 +1549,8 @@ paths:
   /client-releases/versions/{version}:
     get:
       tags: [release, artifact]
-      summary: 获取指定 Windows 客户端版本的严格签名元数据
-      description: 仅供已安装客户端在升级前准备回滚安装器；不执行灰度判断，也不改变“最新版本”语义。
+      summary: 获取指定 Windows LongHub Manager 版本的严格签名元数据
+      description: 仅供已安装 Manager 在升级前准备回滚安装器；只返回 Manager 产品面，不执行灰度判断，也不改变“最新版本”语义。
       operationId: getClientReleaseVersion
       security: []
       parameters:
@@ -594,11 +1581,11 @@ paths:
   /admin/client-releases:
     get:
       tags: [release, artifact]
-      summary: 管理面列出已签名客户端安装包
+      summary: 管理面列出已签名 LongHub Manager 安装包
       operationId: listAdminClientReleases
       responses:
         "200":
-          description: 已签名客户端发布列表及上传审计字段
+          description: 已签名 Manager 发布列表及上传审计字段
           content:
             application/json:
               schema:
@@ -624,8 +1611,8 @@ paths:
         - name: filename
           in: query
           required: true
-          description: 必须精确等于 LongHub-Setup-{version}.exe
-          schema: { type: string, pattern: '^LongHub-Setup-\d+\.\d+\.\d+\.exe$' }
+          description: 必须精确等于 LongHub-Manager-Setup-{version}.exe；旧 LongHub-Setup-{version}.exe 不属于首发契约
+          schema: { type: string, pattern: '^LongHub-Manager-Setup-\d+\.\d+\.\d+\.exe$' }
         - name: channel
           in: query
           required: false
@@ -657,7 +1644,7 @@ paths:
   /admin/client-releases/{version}/rollout:
     patch:
       tags: [release, artifact]
-      summary: 调整当前渠道最新客户端版本的签名灰度或暂停策略
+      summary: 调整当前渠道最新 Manager 版本的签名灰度或暂停策略
       description: 每次变更保留固定 cohort seed、分配更高全局 sequence，并重新签署完整 manifest。
       operationId: updateClientReleaseRollout
       parameters:
@@ -696,10 +1683,187 @@ paths:
           $ref: "#/components/responses/Error"
         default:
           $ref: "#/components/responses/Error"
+  /cloud-plugin-releases/latest:
+    get:
+      tags: [release, artifact]
+      security: []
+      summary: 获取最新已开放的签名 Cloud Plugin tgz 元数据
+      operationId: getLatestCloudPluginRelease
+      parameters:
+        - { name: channel, in: query, required: false, schema: { type: string, enum: [stable, beta], default: stable } }
+      responses:
+        "200": { $ref: "#/components/responses/CloudArtifactReleaseEnvelope" }
+        default: { $ref: "#/components/responses/Error" }
+  /cloud-plugin-releases/signing-key:
+    get:
+      tags: [artifact]
+      security: []
+      summary: 获取 Cloud Plugin 当前签名公钥，仅供运维核对
+      description: longhub-cloud CLI 不得使用本接口建立或替换构建时固定的信任根。
+      operationId: getCloudPluginSigningKey
+      responses:
+        "200": { $ref: "#/components/responses/CloudArtifactSigningKey" }
+        default: { $ref: "#/components/responses/Error" }
+  /cloud-plugin-releases/versions/{version}:
+    get:
+      tags: [release, artifact]
+      security: []
+      summary: 获取指定 Cloud Plugin 版本的签名元数据
+      operationId: getCloudPluginReleaseVersion
+      parameters:
+        - { $ref: "#/components/parameters/CloudArtifactVersion" }
+      responses:
+        "200": { $ref: "#/components/responses/CloudArtifactReleaseEnvelope" }
+        "410": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
+  /cloud-cli-releases/latest:
+    get:
+      tags: [release, artifact]
+      security: []
+      summary: 获取最新已开放的签名 longhub-cloud CLI tgz 元数据
+      operationId: getLatestCloudCliRelease
+      parameters:
+        - { name: channel, in: query, required: false, schema: { type: string, enum: [stable, beta], default: stable } }
+      responses:
+        "200": { $ref: "#/components/responses/CloudArtifactReleaseEnvelope" }
+        default: { $ref: "#/components/responses/Error" }
+  /cloud-cli-releases/signing-key:
+    get:
+      tags: [artifact]
+      security: []
+      summary: 获取 Cloud CLI 当前签名公钥，仅供运维核对
+      operationId: getCloudCliSigningKey
+      responses:
+        "200": { $ref: "#/components/responses/CloudArtifactSigningKey" }
+        default: { $ref: "#/components/responses/Error" }
+  /cloud-cli-releases/versions/{version}:
+    get:
+      tags: [release, artifact]
+      security: []
+      summary: 获取指定 Cloud CLI 版本的签名元数据
+      operationId: getCloudCliReleaseVersion
+      parameters:
+        - { $ref: "#/components/parameters/CloudArtifactVersion" }
+      responses:
+        "200": { $ref: "#/components/responses/CloudArtifactReleaseEnvelope" }
+        "410": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
+  /admin/cloud-plugin-releases:
+    get:
+      tags: [release, artifact]
+      summary: 列出 Cloud Plugin 发布和撤回记录
+      operationId: listAdminCloudPluginReleases
+      responses:
+        "200": { $ref: "#/components/responses/AdminCloudArtifactReleaseList" }
+        default: { $ref: "#/components/responses/Error" }
+    post:
+      tags: [release, artifact]
+      summary: 上传不可覆盖的 Cloud Plugin tgz 并生成暂停状态签名 manifest
+      operationId: publishCloudPluginRelease
+      parameters:
+        - { $ref: "#/components/parameters/CloudArtifactVersionQuery" }
+        - { name: filename, in: query, required: true, schema: { type: string, pattern: '^longhub-openclaw-cloud-plugin-\d+\.\d+\.\d+\.tgz$' } }
+        - { $ref: "#/components/parameters/CloudArtifactChannel" }
+      requestBody: { $ref: "#/components/requestBodies/CloudArtifactUpload" }
+      responses:
+        "201": { $ref: "#/components/responses/AdminCloudArtifactReleaseEnvelope" }
+        "409": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
+  /admin/cloud-plugin-releases/{version}/rollout:
+    patch:
+      tags: [release, artifact]
+      summary: 调整最新 Cloud Plugin 版本的签名灰度或暂停策略
+      operationId: updateCloudPluginReleaseRollout
+      parameters:
+        - { $ref: "#/components/parameters/CloudArtifactVersion" }
+      requestBody: { $ref: "#/components/requestBodies/CloudArtifactRollout" }
+      responses:
+        "200": { $ref: "#/components/responses/AdminCloudArtifactReleaseEnvelope" }
+        default: { $ref: "#/components/responses/Error" }
+  /admin/cloud-plugin-releases/{version}:
+    delete:
+      tags: [release, artifact]
+      summary: 撤回 Cloud Plugin 版本并保留发布历史
+      operationId: withdrawCloudPluginRelease
+      parameters:
+        - { $ref: "#/components/parameters/CloudArtifactVersion" }
+      responses:
+        "200": { $ref: "#/components/responses/AdminCloudArtifactReleaseEnvelope" }
+        default: { $ref: "#/components/responses/Error" }
+  /admin/cloud-cli-releases:
+    get:
+      tags: [release, artifact]
+      summary: 列出 Cloud CLI 发布和撤回记录
+      operationId: listAdminCloudCliReleases
+      responses:
+        "200": { $ref: "#/components/responses/AdminCloudArtifactReleaseList" }
+        default: { $ref: "#/components/responses/Error" }
+    post:
+      tags: [release, artifact]
+      summary: 上传不可覆盖的 Cloud CLI tgz 并生成暂停状态签名 manifest
+      operationId: publishCloudCliRelease
+      parameters:
+        - { $ref: "#/components/parameters/CloudArtifactVersionQuery" }
+        - { name: filename, in: query, required: true, schema: { type: string, pattern: '^longhub-cloud-cli-\d+\.\d+\.\d+\.tgz$' } }
+        - { $ref: "#/components/parameters/CloudArtifactChannel" }
+      requestBody: { $ref: "#/components/requestBodies/CloudArtifactUpload" }
+      responses:
+        "201": { $ref: "#/components/responses/AdminCloudArtifactReleaseEnvelope" }
+        "409": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
+  /admin/cloud-cli-releases/{version}/rollout:
+    patch:
+      tags: [release, artifact]
+      summary: 调整最新 Cloud CLI 版本的签名灰度或暂停策略
+      operationId: updateCloudCliReleaseRollout
+      parameters:
+        - { $ref: "#/components/parameters/CloudArtifactVersion" }
+      requestBody: { $ref: "#/components/requestBodies/CloudArtifactRollout" }
+      responses:
+        "200": { $ref: "#/components/responses/AdminCloudArtifactReleaseEnvelope" }
+        default: { $ref: "#/components/responses/Error" }
+  /admin/cloud-cli-releases/{version}:
+    delete:
+      tags: [release, artifact]
+      summary: 撤回 Cloud CLI 版本并保留发布历史
+      operationId: withdrawCloudCliRelease
+      parameters:
+        - { $ref: "#/components/parameters/CloudArtifactVersion" }
+      responses:
+        "200": { $ref: "#/components/responses/AdminCloudArtifactReleaseEnvelope" }
+        default: { $ref: "#/components/responses/Error" }
+  /downloads/cloud-plugin/{filename}:
+    servers: [{ url: https://api.longhub.example.com }]
+    get:
+      tags: [artifact]
+      security: []
+      summary: 下载签名 manifest 绑定的 Cloud Plugin tgz
+      operationId: downloadCloudPluginArtifact
+      parameters:
+        - { name: filename, in: path, required: true, schema: { type: string, pattern: '^longhub-openclaw-cloud-plugin-\d+\.\d+\.\d+\.tgz$' } }
+      responses:
+        "200": { description: Cloud Plugin tgz, content: { application/gzip: { schema: { type: string, format: binary } } } }
+        "410": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
+  /downloads/cloud-cli/{filename}:
+    servers: [{ url: https://api.longhub.example.com }]
+    get:
+      tags: [artifact]
+      security: []
+      summary: 下载签名 manifest 绑定的 Cloud CLI tgz
+      operationId: downloadCloudCliArtifact
+      parameters:
+        - { name: filename, in: path, required: true, schema: { type: string, pattern: '^longhub-cloud-cli-\d+\.\d+\.\d+\.tgz$' } }
+      responses:
+        "200": { description: Cloud CLI tgz, content: { application/gzip: { schema: { type: string, format: binary } } } }
+        "410": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
   /artifacts/{artifactId}/download-grant:
     post:
       tags: [artifact]
-      summary: 为已授权制品颁发短期下载许可
+      summary: 【已废弃】为历史通用制品颁发短期下载许可
+      deprecated: true
+      description: clean launch 使用专用 Manager 更新和 Cloud Skill 适配器端点，不提供通用制品许可。
       operationId: grantArtifactDownload
       parameters:
         - name: artifactId
@@ -721,7 +1885,9 @@ paths:
   /packs/signing-key:
     get:
       tags: [artifact]
-      summary: 获取发布签名公钥（客户端钉住信任）
+      summary: 【已废弃】获取历史 Pack 发布签名公钥
+      deprecated: true
+      description: clean launch 的适配器信任使用 /skills/adapters/signing-key。
       operationId: getSigningKey
       security: []
       responses:
@@ -739,10 +1905,100 @@ paths:
                     type: string
         default:
           $ref: "#/components/responses/Error"
+  /skills/signing-key:
+    get:
+      tags: [artifact]
+      summary: 【已废弃】获取旧 Skill Package 引用签名公钥
+      deprecated: true
+      description: clean launch 的原生薄适配器使用 /skills/adapters/signing-key。
+      operationId: getSkillSigningKey
+      security: []
+      responses:
+        "200":
+          description: 与 Agent Pack、客户端更新信任根分离的公钥
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [key_id, public_key_pem]
+                properties:
+                  key_id: { type: string }
+                  public_key_pem: { type: string }
+        default: { $ref: "#/components/responses/Error" }
+  /skills/adapters/signing-key:
+    get:
+      tags: [artifact]
+      summary: 获取原生 OpenClaw 薄适配器专用 Ed25519 公钥
+      operationId: getCloudSkillAdapterSigningKey
+      security: []
+      description: clean-launch 适配器信任根；客户端应预置并校验公钥，不能把本响应自举为新的信任根。
+      responses:
+        "200":
+          description: 与 Manager 更新及其它制品信任根相互独立的适配器公钥
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [key_id, public_key_pem]
+                properties:
+                  key_id: { type: string }
+                  public_key_pem: { type: string }
+        default: { $ref: "#/components/responses/Error" }
+  /skills/{skillId}/reference:
+    get:
+      tags: [artifact]
+      summary: 【已废弃】获取旧 Skill Package 签名引用
+      deprecated: true
+      description: clean launch 使用 /skills/{skillId}/adapter；生产关闭旧引用表面。
+      operationId: getSkillReference
+      parameters:
+        - { name: skillId, in: path, required: true, schema: { type: string } }
+        - { name: version, in: query, required: false, schema: { type: string } }
+        - { name: openclaw_version, in: query, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: 已签名 Skill Package 引用；不包含任意本地代码或下载 URL
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SkillReference" }
+        "410": { $ref: "#/components/responses/Error" }
+        "426": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
+  /skills/{skillId}/adapter:
+    get:
+      tags: [artifact]
+      summary: 获取已订阅且兼容的原生 OpenClaw 薄适配器制品
+      description: |
+        使用本次 clean launch 新注册的 device + active account/subscription 门禁。
+        返回签名 manifest 和恰好三个 canonical Base64 纯内容文件；客户端必须在本地再次验签和校验摘要。
+      operationId: getCloudSkillAdapter
+      parameters:
+        - { name: skillId, in: path, required: true, schema: { type: string } }
+        - { name: version, in: query, required: false, schema: { type: string } }
+        - { name: openclaw_version, in: query, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: 签名薄适配器；响应 no-store，不包含源码、凭据或内部地址
+          headers:
+            Cache-Control: { schema: { type: string, const: no-store } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CloudSkillAdapterDownload" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "410": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
   /packs/{packId}/download:
     get:
       tags: [artifact]
-      summary: 下载已授权套装制品（验设备凭据与授权；吊销版本返回 410）
+      summary: 【已废弃】下载历史 Pack 制品
+      deprecated: true
+      description: clean launch 不分发 Pack 制品；生产关闭。
       operationId: downloadPack
       parameters:
         - $ref: "#/components/parameters/PackId"
@@ -764,7 +2020,9 @@ paths:
   /admin/packs:
     post:
       tags: [release]
-      summary: 管理面：上传套装，云端签名后发布（Console 使用管理凭据；同版本重发返回 409）
+      summary: 【已废弃】管理面发布历史 Pack
+      deprecated: true
+      description: clean launch 只发布 Cloud Skill adapter。
       operationId: publishPack
       requestBody:
         required: true
@@ -793,7 +2051,9 @@ paths:
   /admin/packs/{packId}/{version}/revoke:
     post:
       tags: [release]
-      summary: 管理面：吊销已发布版本
+      summary: 【已废弃】管理面撤销历史 Pack 版本
+      deprecated: true
+      description: clean launch 只撤回 Cloud Skill adapter。
       operationId: revokePackRelease
       parameters:
         - $ref: "#/components/parameters/PackId"
@@ -813,10 +2073,133 @@ paths:
           $ref: "#/components/responses/Error"
         default:
           $ref: "#/components/responses/Error"
+  /admin/skills:
+    post:
+      tags: [release]
+      summary: 【已废弃】管理面发布旧 Skill Package
+      deprecated: true
+      description: clean launch 只发布 Cloud Skill adapter。
+      operationId: publishSkill
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [package]
+              properties:
+                package: { $ref: "#/components/schemas/SkillPackage" }
+      responses:
+        "201":
+          description: 不可覆盖的 Skill 版本已发布
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SkillReleaseSummary" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
+  /admin/skills/{skillId}/{version}/revoke:
+    post:
+      tags: [release]
+      summary: 【已废弃】管理面撤销旧 Skill Package
+      deprecated: true
+      description: clean launch 使用 /admin/cloud-skill-adapters/{skillId}/{version}/revoke。
+      operationId: revokeSkillRelease
+      parameters:
+        - { name: skillId, in: path, required: true, schema: { type: string } }
+        - { name: version, in: path, required: true, schema: { type: string } }
+      responses:
+        "202":
+          description: Skill 版本已撤销
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SkillReleaseSummary" }
+        default: { $ref: "#/components/responses/Error" }
+  /admin/cloud-skill-adapters:
+    get:
+      tags: [release]
+      summary: 管理面查询原生 OpenClaw 薄适配器发布元数据
+      description: >-
+        clean-launch 运营页面使用的只读发布列表。服务端已提供 GET 列表、POST 发布和撤回路由。
+        仅返回适配器 manifest 元数据，不返回签名制品正文。
+      x-longhub-implementation-status: implemented
+      operationId: listCloudSkillAdapters
+      parameters:
+        - name: skill_id
+          in: query
+          required: false
+          schema: { type: string }
+      responses:
+        "200":
+          description: 适配器发布元数据
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [releases]
+                properties:
+                  releases:
+                    type: array
+                    items:
+                      allOf:
+                        - $ref: "#/components/schemas/CloudSkillAdapterReleaseSummary"
+                        - type: object
+                          properties:
+                            min_manager_version: { type: string }
+                            openclaw_version: { type: string }
+                            compatibility: { $ref: "#/components/schemas/CloudSkillAdapterCompatibility" }
+        default: { $ref: "#/components/responses/Error" }
+    post:
+      tags: [release]
+      summary: 管理面发布原生 OpenClaw 薄适配器（服务端重算摘要并签名）
+      description: 制品只包含公开 manifest、SKILL.md 和 JSON Schema，不得包含 Cloud Executor 实现、凭据或内部 URL。
+      operationId: publishCloudSkillAdapter
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [manifest, files]
+              properties:
+                manifest: { $ref: "#/components/schemas/CloudSkillAdapterPublishManifest" }
+                files:
+                  $ref: "#/components/schemas/CloudSkillAdapterFiles"
+      responses:
+        "201":
+          description: 不可覆盖的适配器版本已发布
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CloudSkillAdapterReleaseSummary" }
+        "409": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
+  /admin/cloud-skill-adapters/{skillId}/{version}/revoke:
+    post:
+      tags: [release]
+      summary: 管理面撤销原生 OpenClaw 薄适配器版本
+      operationId: revokeCloudSkillAdapter
+      parameters:
+        - { name: skillId, in: path, required: true, schema: { type: string } }
+        - { name: version, in: path, required: true, schema: { type: string } }
+      responses:
+        "202":
+          description: 适配器版本已撤销
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CloudSkillAdapterReleaseSummary" }
+        default: { $ref: "#/components/responses/Error" }
   /tasks:
     post:
       tags: [task]
-      summary: 创建云端任务（幂等）
+      summary: 创建 Cloud Skill 云端任务（幂等）
+      description: >-
+        clean-launch 唯一的云端执行入口。请求必须绑定设备、Skill 版本、订阅 entitlement、严格 input
+        Schema 和 Idempotency-Key；本地 OpenClaw 的其它 Skill 不经过此路径。
       operationId: createTask
       parameters:
         - name: Idempotency-Key
@@ -837,6 +2220,39 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Task"
+        "200":
+          description: 相同 owner 与 Idempotency-Key 的任务重放，返回原任务且不重复计量/执行
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+        "409":
+          description: 幂等键绑定冲突或任务输入摘要不同
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "403":
+          description: Cloud Skill 订阅/entitlement 无效，或周期额度耗尽；本地 OpenClaw 不受影响
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "429":
+          description: Cloud Skill 每分钟速率或设备并发达到计划上限；响应包含 Retry-After
+          headers:
+            Retry-After:
+              schema: { type: integer, minimum: 1 }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "503":
+          description: 用量存储或 Executor 暂时不可用；不得降级为未授权执行
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
         "4XX":
           $ref: "#/components/responses/Error"
         default:
@@ -844,10 +2260,11 @@ paths:
   /tasks/{taskId}:
     get:
       tags: [task]
-      summary: 查询任务状态
+      summary: 查询 Cloud Skill 任务状态（严格 owner/Agent 绑定）
       operationId: getTask
       parameters:
         - $ref: "#/components/parameters/TaskId"
+        - $ref: "#/components/parameters/TaskAgentId"
       responses:
         "200":
           description: 任务详情
@@ -862,10 +2279,11 @@ paths:
   /tasks/{taskId}/cancel:
     post:
       tags: [task]
-      summary: 取消任务
+      summary: 取消 Cloud Skill 任务（幂等）
       operationId: cancelTask
       parameters:
         - $ref: "#/components/parameters/TaskId"
+        - $ref: "#/components/parameters/TaskAgentId"
       responses:
         "202":
           description: 取消请求已受理
@@ -880,10 +2298,11 @@ paths:
   /tasks/{taskId}/events:
     get:
       tags: [task]
-      summary: 订阅任务进度事件（SSE，支持 Last-Event-ID 断线恢复）
+      summary: 订阅 Cloud Skill 任务进度事件（SSE，支持 Last-Event-ID 断线恢复）
       operationId: streamTaskEvents
       parameters:
         - $ref: "#/components/parameters/TaskId"
+        - $ref: "#/components/parameters/TaskAgentId"
         - name: Last-Event-ID
           in: header
           required: false
@@ -919,6 +2338,13 @@ components:
       required: true
       schema:
         type: string
+    TaskAgentId:
+      name: X-LongHub-Agent-ID
+      in: header
+      required: false
+      description: 当前 OpenClaw Agent 绑定；缺省为 openclaw-default
+      schema:
+        $ref: "#/components/schemas/TaskAgentIdValue"
     PageSize:
       name: page_size
       in: query
@@ -932,6 +2358,38 @@ components:
       in: query
       schema:
         type: string
+    CloudArtifactVersion:
+      name: version
+      in: path
+      required: true
+      schema: { type: string, pattern: '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$' }
+    CloudArtifactVersionQuery:
+      name: version
+      in: query
+      required: true
+      schema: { type: string, pattern: '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$' }
+    CloudArtifactChannel:
+      name: channel
+      in: query
+      required: false
+      schema: { type: string, enum: [stable, beta], default: stable }
+  requestBodies:
+    CloudArtifactUpload:
+      required: true
+      content:
+        application/octet-stream:
+          schema: { type: string, format: binary, maxLength: 134217728 }
+    CloudArtifactRollout:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: false
+            required: [status, basis_points]
+            properties:
+              status: { type: string, enum: [active, paused] }
+              basis_points: { type: integer, minimum: 0, maximum: 10000 }
   responses:
     Error:
       description: 统一错误响应
@@ -939,30 +2397,212 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/ApiError"
+    CloudArtifactReleaseEnvelope:
+      description: 签名制品发布；没有开放版本时 release 为 null
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: false
+            required: [release]
+            properties:
+              release:
+                oneOf:
+                  - { $ref: "#/components/schemas/CloudArtifactReleaseManifest" }
+                  - type: "null"
+    CloudArtifactSigningKey:
+      description: 当前签名公钥，仅供运维核对
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/CloudArtifactSigningKey" }
+    AdminCloudArtifactReleaseEnvelope:
+      description: 管理发布记录
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: false
+            required: [release]
+            properties:
+              release: { $ref: "#/components/schemas/AdminCloudArtifactRelease" }
+    AdminCloudArtifactReleaseList:
+      description: 管理发布记录列表
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: false
+            required: [releases]
+            properties:
+              releases:
+                type: array
+                items: { $ref: "#/components/schemas/AdminCloudArtifactRelease" }
   schemas:
+    HttpLatencyBuckets:
+      type: object
+      additionalProperties: false
+      required: [lt_100ms, 100_to_200ms, 200_to_300ms, 300_to_500ms, 500_to_800ms, 800ms_to_1s, 1_to_3s, 3_to_5s, gte_5s]
+      properties:
+        lt_100ms: { type: integer, minimum: 0 }
+        100_to_200ms: { type: integer, minimum: 0 }
+        200_to_300ms: { type: integer, minimum: 0 }
+        300_to_500ms: { type: integer, minimum: 0 }
+        500_to_800ms: { type: integer, minimum: 0 }
+        800ms_to_1s: { type: integer, minimum: 0 }
+        1_to_3s: { type: integer, minimum: 0 }
+        3_to_5s: { type: integer, minimum: 0 }
+        gte_5s: { type: integer, minimum: 0 }
+    HttpRouteOperationalMetric:
+      type: object
+      additionalProperties: false
+      required: [route_id, requests, five_xx, five_xx_rate, latency_buckets, p95_latency_bucket, p95_latency_upper_bound_ms]
+      properties:
+        route_id:
+          type: string
+          enum: [cloud_api, health_probe, client_feature_policy, client_runtime_config, skill_catalog, skill_download, skill_release_check]
+        requests: { type: integer, minimum: 0 }
+        five_xx: { type: integer, minimum: 0 }
+        five_xx_rate: { type: [number, "null"], minimum: 0, maximum: 1 }
+        latency_buckets: { $ref: "#/components/schemas/HttpLatencyBuckets" }
+        p95_latency_bucket:
+          type: [string, "null"]
+          enum: [lt_100ms, 100_to_200ms, 200_to_300ms, 300_to_500ms, 500_to_800ms, 800ms_to_1s, 1_to_3s, 3_to_5s, gte_5s, null]
+        p95_latency_upper_bound_ms: { type: [integer, "null"], minimum: 0 }
+    SloReading:
+      type: object
+      additionalProperties: false
+      required: [value, target, status]
+      properties:
+        value: { type: [number, "null"] }
+        target: { type: string }
+        status: { type: string, enum: [pass, fail, no_data] }
+    OperationalDashboard:
+      type: object
+      additionalProperties: false
+      required: [users_total, devices_total, orders_paid_total, revenue_fen, releases_total, operations, model_usage]
+      properties:
+        users_total: { type: integer, minimum: 0 }
+        devices_total: { type: integer, minimum: 0 }
+        orders_paid_total: { type: integer, minimum: 0 }
+        revenue_fen: { type: integer }
+        releases_total: { type: integer, minimum: 0 }
+        operations:
+          type: object
+          additionalProperties: false
+          required: [window_hours, client_starts, previous_exit_clean, previous_exit_unclean, crash_rate, model_requests, model_successes, model_success_rate, model_latency_buckets, update_healthy, update_failed, update_rollback, update_success_rate, product_errors, top_product_errors, manager_versions, http_routes, emergency_disable, service_slo]
+          properties:
+            window_hours: { type: integer, const: 24 }
+            client_starts: { type: integer, minimum: 0 }
+            previous_exit_clean: { type: integer, minimum: 0 }
+            previous_exit_unclean: { type: integer, minimum: 0 }
+            crash_rate: { type: [number, "null"], minimum: 0, maximum: 1 }
+            model_requests: { type: integer, minimum: 0 }
+            model_successes: { type: integer, minimum: 0 }
+            model_success_rate: { type: [number, "null"], minimum: 0, maximum: 1 }
+            model_latency_buckets:
+              type: object
+              additionalProperties: false
+              required: [lt_1s, 1_to_3s, 3_to_10s, 10_to_30s, gte_30s]
+              properties:
+                lt_1s: { type: integer, minimum: 0 }
+                1_to_3s: { type: integer, minimum: 0 }
+                3_to_10s: { type: integer, minimum: 0 }
+                10_to_30s: { type: integer, minimum: 0 }
+                gte_30s: { type: integer, minimum: 0 }
+            update_healthy: { type: integer, minimum: 0 }
+            update_failed: { type: integer, minimum: 0 }
+            update_rollback: { type: integer, minimum: 0 }
+            update_success_rate: { type: [number, "null"], minimum: 0, maximum: 1 }
+            product_errors: { type: integer, minimum: 0 }
+            top_product_errors:
+              type: array
+              maxItems: 5
+              items:
+                type: object
+                additionalProperties: false
+                required: [code, count]
+                properties:
+                  code: { type: string }
+                  count: { type: integer, minimum: 0 }
+            manager_versions:
+              type: array
+              items:
+                type: object
+                additionalProperties: false
+                required: [version, count]
+                properties:
+                  version: { type: string }
+                  count: { type: integer, minimum: 0 }
+            http_routes:
+              type: array
+              items: { $ref: "#/components/schemas/HttpRouteOperationalMetric" }
+            emergency_disable:
+              type: object
+              additionalProperties: false
+              required: [samples, p95_ms, max_ms, within_5s_rate]
+              properties:
+                samples: { type: integer, minimum: 0 }
+                p95_ms: { type: [integer, "null"], minimum: 0 }
+                max_ms: { type: [integer, "null"], minimum: 0 }
+                within_5s_rate: { type: [number, "null"], minimum: 0, maximum: 1 }
+            service_slo:
+              type: object
+              additionalProperties: false
+              required: [cloud_api_monthly_availability, feature_policy_p95, feature_policy_5xx_rate, runtime_config_5xx_rate, skill_surface_p95, emergency_disable_p95]
+              properties:
+                cloud_api_monthly_availability:
+                  type: object
+                  additionalProperties: false
+                  required: [value, target, status, source]
+                  properties:
+                    value: { type: [number, "null"] }
+                    target: { type: string }
+                    status: { type: string, enum: [pass, fail, no_data] }
+                    source: { type: string, const: external_probe }
+                feature_policy_p95: { $ref: "#/components/schemas/SloReading" }
+                feature_policy_5xx_rate: { $ref: "#/components/schemas/SloReading" }
+                runtime_config_5xx_rate: { $ref: "#/components/schemas/SloReading" }
+                skill_surface_p95: { $ref: "#/components/schemas/SloReading" }
+                emergency_disable_p95: { $ref: "#/components/schemas/SloReading" }
+        model_usage:
+          type: object
+          additionalProperties: false
+          required: [requests, input_tokens, output_tokens, cache_tokens, estimated_tokens, cost_microunits]
+          properties:
+            requests: { type: integer, minimum: 0 }
+            input_tokens: { type: integer, minimum: 0 }
+            output_tokens: { type: integer, minimum: 0 }
+            cache_tokens: { type: integer, minimum: 0 }
+            estimated_tokens: { type: integer, minimum: 0 }
+            cost_microunits: { type: integer, minimum: 0 }
     ClientUpdateManifest:
       type: object
       additionalProperties: false
-      description: longhub/client-update/v2 签名载荷；字段顺序无关，按共享 canonical JSON 实现签名。
-      required: [schema_version, sequence, version, channel, platform, arch, filename, size, sha256, url_path, published_at, rollback_data_strategy, rollout]
+      description: >-
+        longhub/client-update/v2 签名载荷；product_surface 固定绑定免费 LongHub Manager，只允许 Manager
+        产品制品进入 clean-launch 更新通道。字段顺序无关，按共享 canonical JSON 实现签名。
+      required: [schema_version, product_surface, sequence, version, channel, platform, arch, filename, size, sha256, url_path, published_at, rollback_data_strategy, rollout]
       properties:
         schema_version: { type: string, const: longhub/client-update/v2 }
+        product_surface: { type: string, const: longhub-manager }
         sequence: { type: integer, minimum: 1, maximum: 9007199254740991 }
         version: { type: string, pattern: '^(0|[1-9]\d{0,8})\.(0|[1-9]\d{0,8})\.(0|[1-9]\d{0,8})$' }
         channel: { type: string, enum: [stable, beta] }
         platform: { type: string, const: win32 }
         arch: { type: string, const: x64 }
-        filename: { type: string, pattern: '^LongHub-Setup-\d+\.\d+\.\d+\.exe$' }
+        filename: { type: string, pattern: '^LongHub-Manager-Setup-\d+\.\d+\.\d+\.exe$' }
         size: { type: integer, minimum: 1, maximum: 1073741824 }
         sha256: { type: string, pattern: '^[a-f0-9]{64}$' }
         url_path:
           type: string
-          pattern: '^/downloads/LongHub-Setup-\d+\.\d+\.\d+\.exe$'
+          pattern: '^/downloads/LongHub-Manager-Setup-\d+\.\d+\.\d+\.exe$'
         published_at: { type: string, format: date-time }
         rollback_data_strategy:
           type: string
           enum: [snapshot_required, backward_compatible]
-          description: snapshot_required 表示程序降级前必须恢复安装前状态；backward_compatible 仅可在迁移兼容性已证明时使用。
+          description: >-
+            snapshot_required 表示程序降级前必须恢复本次更新前的本机快照；backward_compatible 只表示
+            clean-launch Manager 版本间的数据格式已验证可直接降级；不得据此导入其它产品面的数据。
         rollout:
           $ref: "#/components/schemas/ClientUpdateRollout"
     ClientUpdateRollout:
@@ -1008,11 +2648,69 @@ components:
         rollout_updated_at: { type: string, format: date-time }
         url:
           type: string
-          pattern: '^/downloads/LongHub-Setup-\d+\.\d+\.\d+\.exe$'
+          pattern: '^/downloads/LongHub-Manager-Setup-\d+\.\d+\.\d+\.exe$'
+    CloudArtifactReleaseManifest:
+      type: object
+      additionalProperties: false
+      description: >-
+        Ed25519 签名覆盖除 signature 外的完整 canonical JSON；size 与 sha256 绑定同一份不可覆盖 tgz。
+        客户端信任根构建时固定，不得从 signing-key 接口替换。
+      required: [schema_version, product_surface, sequence, version, channel, platform, arch, filename, size, sha256, url_path, published_at, compatibility, rollout, signature_key_id, signature]
+      properties:
+        schema_version: { type: string, enum: [longhub/cloud-plugin-release/v1, longhub/cloud-cli-release/v1] }
+        product_surface: { type: string, enum: [longhub-cloud-plugin, longhub-cloud-cli] }
+        sequence: { type: integer, minimum: 1, maximum: 9007199254740991 }
+        version: { type: string, pattern: '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$' }
+        channel: { type: string, enum: [stable, beta] }
+        platform: { type: string, const: win32 }
+        arch: { type: string, const: x64 }
+        filename:
+          type: string
+          pattern: '^(longhub-openclaw-cloud-plugin|longhub-cloud-cli)-\d+\.\d+\.\d+\.tgz$'
+        size: { type: integer, minimum: 1, maximum: 134217728 }
+        sha256: { type: string, pattern: '^[a-f0-9]{64}$' }
+        url_path:
+          type: string
+          pattern: '^/downloads/(cloud-plugin/longhub-openclaw-cloud-plugin|cloud-cli/longhub-cloud-cli)-\d+\.\d+\.\d+\.tgz$'
+        published_at: { type: string, format: date-time }
+        compatibility:
+          type: object
+          additionalProperties: false
+          required: [openclaw_version, node]
+          properties:
+            openclaw_version: { type: string }
+            node: { type: string }
+        rollout:
+          $ref: "#/components/schemas/ClientUpdateRollout"
+        signature_key_id: { type: string, pattern: '^[a-zA-Z0-9._-]{1,128}$' }
+        signature: { type: string, pattern: '^[A-Za-z0-9+/]{86}==$' }
+    CloudArtifactSigningKey:
+      type: object
+      additionalProperties: false
+      required: [purpose, key_id, public_key_pem]
+      properties:
+        purpose: { type: string, enum: [longhub-cloud-plugin-release-v1, longhub-cloud-cli-release-v1] }
+        key_id: { type: string, pattern: '^[a-zA-Z0-9._-]{1,128}$' }
+        public_key_pem: { type: string }
+    AdminCloudArtifactRelease:
+      type: object
+      additionalProperties: false
+      required: [manifest, uploaded_by, uploaded_at, rollout_updated_by, rollout_updated_at, url]
+      properties:
+        manifest: { $ref: "#/components/schemas/CloudArtifactReleaseManifest" }
+        uploaded_by: { type: string }
+        uploaded_at: { type: string, format: date-time }
+        rollout_updated_by: { type: string }
+        rollout_updated_at: { type: string, format: date-time }
+        withdrawn_by: { type: string }
+        withdrawn_at: { type: string, format: date-time }
+        url:
+          type: string
+          pattern: '^/downloads/(cloud-plugin/longhub-openclaw-cloud-plugin|cloud-cli/longhub-cloud-cli)-\d+\.\d+\.\d+\.tgz$'
     ClientRuntimeConfig:
       type: object
       additionalProperties: false
-      required: [schema_version, config_version, issued_at, expires_at, provider_id, base_path, model_id, display_name, api_type, context_window, max_tokens, allow_user_model_selection, compatible_desktop, product, features]
+      required: [schema_version, config_version, issued_at, expires_at, provider_id, base_path, model_id, display_name, api_type, context_window, max_tokens, allow_user_model_selection, compatible_manager, product, features]
       properties:
         schema_version: { type: string, const: longhub/runtime-config/v1 }
         config_version: { type: string, minLength: 1, maxLength: 128 }
@@ -1026,7 +2724,7 @@ components:
         context_window: { type: integer, minimum: 1024, maximum: 10000000 }
         max_tokens: { type: integer, minimum: 256, maximum: 1000000 }
         allow_user_model_selection: { type: boolean, const: false }
-        compatible_desktop:
+        compatible_manager:
           type: object
           additionalProperties: false
           required: [min_version]
@@ -1050,8 +2748,100 @@ components:
             agent_catalog: { type: boolean }
             file_upload: { type: boolean }
             tool_execution: { type: boolean }
+    ModelInputCapabilities:
+      type: object
+      additionalProperties: false
+      required: [schema_version, model_id, input, file_inputs]
+      properties:
+        schema_version: { type: string, const: longhub/model-capabilities/v1 }
+        model_id: { type: string, const: longhub-default }
+        input:
+          type: array
+          minItems: 1
+          maxItems: 2
+          prefixItems:
+            - { type: string, const: text }
+            - { type: string, const: image }
+        file_inputs:
+          type: object
+          additionalProperties: false
+          required: [text_extraction, image_understanding]
+          properties:
+            text_extraction: { type: boolean }
+            image_understanding: { type: boolean }
+    FeaturePolicyDocument:
+      type: object
+      additionalProperties: false
+      required: [schema_version, policy_version, issued_at, expires_at, features]
+      properties:
+        schema_version: { type: string, const: longhub/feature-policy/v2 }
+        policy_version: { type: string, pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$' }
+        issued_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time, description: 与 issued_at 间隔不超过五分钟 }
+        features:
+          type: array
+          maxItems: 64
+          items: { $ref: "#/components/schemas/FeaturePolicyEntry" }
+    FeaturePolicyEntry:
+      type: object
+      additionalProperties: false
+      required: [feature_id, enabled, scope, audience, mode, risk_level, limits, data_policy, required_entitlements, required_permissions, min_manager_version, emergency_disabled]
+      properties:
+        feature_id:
+          type: string
+          enum: [chat.core, session.manage, session.local_search, session.export, file.input, image.input, voice.input, voice.output, knowledge.tenant, knowledge.personal, memory.user_controls, web.search_readonly, url.fetch_readonly, image.generate, agent.catalog, agent.custom_nocode, agent.handoff_summary, skill.catalog, skill.execute, skill.user_content, workflow.user_bounded, automation.reminder, automation.scheduled_read, channel.enterprise, data.export_delete]
+        enabled: { type: boolean }
+        scope: { type: string, enum: [global, tenant, plan, device, agent] }
+        scope_id:
+          type: string
+          pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'
+          description: global 禁止；其余 scope 必填
+        audience: { type: string, enum: [user, tenant_admin, platform_admin] }
+        mode: { type: string, enum: [default, tenant_controlled, admin_approved] }
+        risk_level: { type: string, enum: [low, high] }
+        limits:
+          type: object
+          additionalProperties: false
+          properties:
+            count: { type: integer, minimum: 0 }
+            bytes: { type: integer, minimum: 0 }
+            duration_ms: { type: integer, minimum: 0 }
+            concurrency: { type: integer, minimum: 0 }
+            cost_cents: { type: integer, minimum: 0 }
+        data_policy:
+          type: object
+          additionalProperties: false
+          required: [processing_location, retention_days, export_allowed, deletion_allowed]
+          properties:
+            processing_location: { type: string, enum: [platform_region, tenant_region, device_local] }
+            retention_days: { type: integer, minimum: 0, maximum: 3650 }
+            export_allowed: { type: boolean }
+            deletion_allowed: { type: boolean }
+        required_entitlements:
+          type: array
+          maxItems: 32
+          uniqueItems: true
+          items: { type: string, pattern: '^[a-z][a-z0-9-]*(?::[a-z0-9_.-]+)*$' }
+        required_permissions:
+          type: array
+          maxItems: 32
+          uniqueItems: true
+          items: { type: string, pattern: '^[a-z][a-z0-9-]*(?::[a-z0-9_.-]+)+$' }
+        min_manager_version: { type: string }
+        max_manager_version: { type: string }
+        emergency_disabled: { type: boolean }
+    FeaturePolicyRecord:
+      type: object
+      additionalProperties: false
+      required: [policy_id, policy, revision, updated_at]
+      properties:
+        policy_id: { type: string }
+        policy: { $ref: "#/components/schemas/FeaturePolicyEntry" }
+        revision: { type: integer, minimum: 1 }
+        updated_at: { type: string, format: date-time }
     AdminModelConfigInput:
       type: object
+      additionalProperties: false
       properties:
         config_id: { type: string, pattern: '^[A-Za-z0-9._-]{1,128}$' }
         scope_type: { type: string, enum: [global, tenant, plan, device] }
@@ -1070,12 +2860,8 @@ components:
         fallback_config_id: { type: [string, 'null'] }
         request_timeout_ms: { type: integer, minimum: 1000, maximum: 300000 }
         max_retries: { type: integer, minimum: 0, maximum: 2 }
-        min_desktop_version: { type: string }
-        max_desktop_version: { type: [string, 'null'] }
-        assistant_name: { type: string, maxLength: 64 }
-        assistant_avatar_path: { type: string, pattern: '^/assets/' }
-        welcome_message: { type: string, maxLength: 500 }
-        quick_tasks: { type: array, maxItems: 8, items: { type: string, maxLength: 120 } }
+        min_manager_version: { type: string }
+        max_manager_version: { type: [string, 'null'] }
         device_requests_per_minute: { type: integer, minimum: 1 }
         device_daily_tokens: { type: integer, minimum: 1000 }
         tenant_monthly_tokens: { type: integer, minimum: 1000 }
@@ -1093,22 +2879,199 @@ components:
         retryable:
           type: boolean
         details: {}
+    TaskAgentIdValue:
+      type: string
+      pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'
+      maxLength: 128
     DeviceRegisterRequest:
       type: object
+      additionalProperties: false
+      description: 首次注册只建立设备身份；租户由 Cloud 在配对/账号流程中分配，客户端不得提交 tenant_id。
       required: [platform, app_version, device_fingerprint]
       properties:
         platform:
           type: string
-          enum: [windows]
+          enum: [windows, openclaw-plugin-windows]
         app_version:
           type: string
+          maxLength: 64
         device_fingerprint:
           type: string
+          minLength: 1
+          maxLength: 256
         display_name:
           type: string
+          maxLength: 128
+    CloudSkillPlanInput:
+      type: object
+      additionalProperties: false
+      required: [plan_id, name, skill_ids, price_monthly_fen, price_yearly_fen]
+      properties:
+        plan_id: { type: string, pattern: '^[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*)*$' }
+        name: { type: string, minLength: 1, maxLength: 120 }
+        description: { type: string, maxLength: 500 }
+        skill_ids:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: { type: string }
+        price_monthly_fen: { type: integer, minimum: 0 }
+        price_yearly_fen: { type: integer, minimum: 0 }
+        included_calls:
+          type: integer
+          minimum: 0
+          default: 1000
+          description: 当前订阅周期内按 subscription_id + skill_id 计数的调用上限
+        requests_per_minute:
+          type: integer
+          minimum: 1
+          default: 60
+          description: UTC 固定分钟窗口；同一订阅/租户/用户/设备的多个 Agent 共用
+        max_concurrency:
+          type: integer
+          minimum: 1
+          default: 2
+          description: 同一订阅/租户/用户/设备的活动执行租约上限
+        status: { type: string, enum: [listed, unlisted], default: listed }
+    CloudSkillPlanPatch:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        name: { type: string, minLength: 1, maxLength: 120 }
+        description: { type: string, maxLength: 500 }
+        skill_ids:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: { type: string }
+        price_monthly_fen: { type: integer, minimum: 0 }
+        price_yearly_fen: { type: integer, minimum: 0 }
+        included_calls: { type: integer, minimum: 0 }
+        requests_per_minute: { type: integer, minimum: 1 }
+        max_concurrency: { type: integer, minimum: 1 }
+        status: { type: string, enum: [listed, unlisted] }
+    CloudSkillPlan:
+      type: object
+      additionalProperties: false
+      required: [plan_id, name, skill_ids, price_monthly_fen, price_yearly_fen, included_calls, requests_per_minute, max_concurrency, status, created_at]
+      properties:
+        plan_id: { type: string, pattern: '^[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*)*$' }
+        name: { type: string, minLength: 1, maxLength: 120 }
+        description: { type: string, maxLength: 500 }
+        skill_ids:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: { type: string }
+        price_monthly_fen: { type: integer, minimum: 0 }
+        price_yearly_fen: { type: integer, minimum: 0 }
+        included_calls: { type: integer, minimum: 0 }
+        requests_per_minute: { type: integer, minimum: 1 }
+        max_concurrency: { type: integer, minimum: 1 }
+        status: { type: string, enum: [listed, unlisted] }
+        created_at: { type: string, format: date-time }
+    OrderCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [type, plan_id, tenant_id, period]
+      description: >-
+        clean-launch 只接受 `cloud_skill_plan`，使用 plan_id + tenant_id + period；服务端根据已上架计划
+        重新计算金额，不信任客户端价格。旧商品和充值请求使用已废弃路径定义，不进入本 Schema。
+      properties:
+        type: { type: string, const: cloud_skill_plan }
+        plan_id: { type: string, maxLength: 128 }
+        tenant_id: { type: string, maxLength: 128 }
+        period: { type: string, enum: [monthly, yearly] }
+    OrderPaymentRequest:
+      type: object
+      additionalProperties: false
+      x-longhub-production-status: payment-provider-pending
+      maxProperties: 0
+      description: >-
+        正式支付 Provider 尚未选定，当前生产请求固定返回 PAYMENT_NOT_CONFIGURED。clean-launch 对外契约
+        不接受任何开发测试支付方式；接入真实渠道时必须在同一 OpenAPI 版本中先补齐受信 Provider 请求字段。
+    Order:
+      type: object
+      additionalProperties: false
+      required: [order_id, user_id, type, amount_fen, status, created_at]
+      description: clean-launch Cloud Skill 订阅订单；不包含旧商品、充值、钱包或余额支付字段。
+      properties:
+        order_id: { type: string }
+        user_id: { type: string }
+        type:
+          type: string
+          const: cloud_skill_plan
+        plan_id: { type: string }
+        tenant_id: { type: string }
+        period: { type: string, enum: [monthly, yearly] }
+        amount_fen: { type: integer, minimum: 0 }
+        status: { type: string, enum: [pending, paid, cancelled, refunded] }
+        created_at: { type: string, format: date-time }
+        paid_at: { type: string, format: date-time }
+        refunded_at: { type: string, format: date-time }
+        replayed: { type: boolean, description: 本次请求是否为结算重放 }
+        settlement_id: { type: string }
+    CloudSkillSubscription:
+      type: object
+      additionalProperties: false
+      required: [subscription_id, user_id, tenant_id, plan_id, status, period, starts_at, expires_at, source_order_id, created_at]
+      properties:
+        subscription_id: { type: string }
+        user_id: { type: string }
+        tenant_id: { type: string }
+        plan_id: { type: string }
+        status: { type: string, enum: [active, cancelled, expired, refunded, suspended] }
+        period: { type: string, enum: [monthly, yearly] }
+        starts_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+        cancelled_at: { type: string, format: date-time }
+        refunded_at: { type: string, format: date-time }
+        source_order_id: { type: string }
+        created_at: { type: string, format: date-time }
+    CloudSkillEntitlement:
+      type: object
+      additionalProperties: false
+      required: [entitlement_id, subscription_id, tenant_id, user_id, skill_id, plan_id, status, expires_at, created_at]
+      properties:
+        entitlement_id: { type: string }
+        subscription_id: { type: string }
+        tenant_id: { type: string }
+        user_id: { type: string }
+        skill_id: { type: string }
+        plan_id: { type: string }
+        status: { type: string, enum: [active, suspended, revoked] }
+        expires_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+    AccountUser:
+      type: object
+      additionalProperties: false
+      required: [user_id, email, status, created_at]
+      description: Cloud 账号的脱敏视图；不包含密码、会话 Token 或本地 OpenClaw 凭据。
+      properties:
+        user_id: { type: string }
+        email: { type: string, format: email }
+        status: { type: string, enum: [active, disabled] }
+        created_at: { type: string, format: date-time }
+    AccountDevice:
+      type: object
+      additionalProperties: false
+      required: [device_id, status, created_at]
+      description: 当前账号可见的设备脱敏视图；设备 Token 只在注册响应中一次下发。
+      properties:
+        device_id: { type: string }
+        status: { type: string, enum: [active, revoked] }
+        platform: { type: string }
+        app_version: { type: string }
+        display_name: { type: string }
+        created_at: { type: string, format: date-time }
     Device:
       type: object
-      required: [device_id, tenant_id, status, created_at]
+      additionalProperties: false
+      required: [device_id, tenant_id, status, platform, app_version, device_fingerprint, device_token, created_at]
+      description: >-
+        本次 clean launch 新注册设备的 Cloud API 身份；不代表本地 OpenClaw 的产品激活或能力授权。
+        device_token 仅在新注册响应中下发。
       properties:
         device_id:
           type: string
@@ -1117,24 +3080,51 @@ components:
         status:
           type: string
           enum: [active, revoked]
+        platform: { type: string, enum: [windows, openclaw-plugin-windows] }
+        app_version: { type: string }
+        device_fingerprint: { type: string }
+        display_name: { type: string }
+        user_id: { type: string }
         created_at:
           type: string
           format: date-time
         device_token:
           type: string
           description: 设备凭据，仅注册响应下发；客户端保存后作为 Bearer 凭据访问受保护接口
-        activation_code_id:
+    DevicePairingChallenge:
+      type: object
+      additionalProperties: false
+      required: [challenge_id, device_id, expires_at, pairing_code]
+      description: longhub-cloud CLI 生成的短期一次性配对证明；Cloud 只保存 pairing_code 摘要。
+      properties:
+        challenge_id: { type: string }
+        device_id: { type: string }
+        expires_at: { type: string, format: date-time }
+        pairing_code:
           type: string
-          readOnly: true
-        activated_at:
-          type: string
-          format: date-time
-          readOnly: true
+          pattern: '^[A-HJ-NP-Z2-9]{12}$'
+          description: 只在本次 CLI 响应中下发的明文配对码
+    DeviceSelf:
+      type: object
+      additionalProperties: false
+      required: [device_id, status, platform, app_version, bound, created_at]
+      description: 当前 bearer 对应设备的脱敏状态；永不包含 device_token 或设备指纹。
+      properties:
+        device_id: { type: string }
+        status: { type: string, enum: [active, revoked] }
+        platform: { type: string, enum: [windows, openclaw-plugin-windows] }
+        app_version: { type: string }
+        display_name: { type: string }
+        bound: { type: boolean }
+        last_seen_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
     DeviceActivationStatus:
       type: object
+      deprecated: true
+      description: 历史授权码激活响应；clean-launch 不使用该 Schema。
       required: [device_id, activated]
       properties:
-        device_id: { type: string, description: 当前 Bearer 凭据所属设备；用于旧客户端安全迁移本地凭据 }
+        device_id: { type: string, description: 历史响应中的设备标识；生产路径关闭且不用于迁移 }
         activated: { type: boolean }
         reason:
           type: string
@@ -1164,7 +3154,7 @@ components:
       type: object
       properties:
         occurred_at: { type: string, format: date-time, description: 服务端只接受前后十五分钟窗口 }
-        desktop_version: { type: string, maxLength: 64 }
+        manager_version: { type: string, maxLength: 64 }
         openclaw_version: { type: string, maxLength: 64 }
         platform: { type: string, enum: [win32] }
         architecture: { type: string, enum: [x64, arm64] }
@@ -1173,11 +3163,11 @@ components:
         - $ref: "#/components/schemas/ClientTelemetryCommon"
         - type: object
           additionalProperties: false
-          required: [event_type, occurred_at, desktop_version, openclaw_version, platform, architecture, fields]
+          required: [event_type, occurred_at, manager_version, openclaw_version, platform, architecture, fields]
           properties:
             event_type: { type: string, const: client_started }
             occurred_at: { type: string, format: date-time }
-            desktop_version: { type: string, maxLength: 64 }
+            manager_version: { type: string, maxLength: 64 }
             openclaw_version: { type: string, maxLength: 64 }
             platform: { type: string, enum: [win32] }
             architecture: { type: string, enum: [x64, arm64] }
@@ -1193,11 +3183,11 @@ components:
         - $ref: "#/components/schemas/ClientTelemetryCommon"
         - type: object
           additionalProperties: false
-          required: [event_type, occurred_at, desktop_version, openclaw_version, platform, architecture, fields]
+          required: [event_type, occurred_at, manager_version, openclaw_version, platform, architecture, fields]
           properties:
             event_type: { type: string, const: gateway_state }
             occurred_at: { type: string, format: date-time }
-            desktop_version: { type: string, maxLength: 64 }
+            manager_version: { type: string, maxLength: 64 }
             openclaw_version: { type: string, maxLength: 64 }
             platform: { type: string, enum: [win32] }
             architecture: { type: string, enum: [x64, arm64] }
@@ -1212,11 +3202,11 @@ components:
         - $ref: "#/components/schemas/ClientTelemetryCommon"
         - type: object
           additionalProperties: false
-          required: [event_type, occurred_at, desktop_version, openclaw_version, platform, architecture, fields]
+          required: [event_type, occurred_at, manager_version, openclaw_version, platform, architecture, fields]
           properties:
             event_type: { type: string, const: client_update_result }
             occurred_at: { type: string, format: date-time }
-            desktop_version: { type: string, maxLength: 64 }
+            manager_version: { type: string, maxLength: 64 }
             openclaw_version: { type: string, maxLength: 64 }
             platform: { type: string, enum: [win32] }
             architecture: { type: string, enum: [x64, arm64] }
@@ -1231,11 +3221,11 @@ components:
         - $ref: "#/components/schemas/ClientTelemetryCommon"
         - type: object
           additionalProperties: false
-          required: [event_type, occurred_at, desktop_version, openclaw_version, platform, architecture, fields]
+          required: [event_type, occurred_at, manager_version, openclaw_version, platform, architecture, fields]
           properties:
             event_type: { type: string, const: product_error }
             occurred_at: { type: string, format: date-time }
-            desktop_version: { type: string, maxLength: 64 }
+            manager_version: { type: string, maxLength: 64 }
             openclaw_version: { type: string, maxLength: 64 }
             platform: { type: string, enum: [win32] }
             architecture: { type: string, enum: [x64, arm64] }
@@ -1250,11 +3240,11 @@ components:
         - $ref: "#/components/schemas/ClientTelemetryCommon"
         - type: object
           additionalProperties: false
-          required: [event_type, occurred_at, desktop_version, openclaw_version, platform, architecture, fields]
+          required: [event_type, occurred_at, manager_version, openclaw_version, platform, architecture, fields]
           properties:
             event_type: { type: string, const: previous_exit }
             occurred_at: { type: string, format: date-time }
-            desktop_version: { type: string, maxLength: 64 }
+            manager_version: { type: string, maxLength: 64 }
             openclaw_version: { type: string, maxLength: 64 }
             platform: { type: string, enum: [win32] }
             architecture: { type: string, enum: [x64, arm64] }
@@ -1266,6 +3256,8 @@ components:
                 result: { type: string, enum: [clean, unclean] }
     CreateActivationCodeRequest:
       type: object
+      deprecated: true
+      description: 历史授权码请求；clean-launch 不创建或核销授权码。
       properties:
         tenant_id: { type: string, default: tenant-default }
         label: { type: string, maxLength: 200 }
@@ -1275,9 +3267,353 @@ components:
           type: array
           maxItems: 32
           items: { type: string }
+    SkillPackage:
+      type: object
+      deprecated: true
+      description: 历史 Skill Package/Pack 模型；clean-launch 使用 CloudSkillAdapterManifest。
+      additionalProperties: false
+      required: [schemaVersion, skill, compatibility, binding, schemas, capabilities, permissions, runtime, limits, integrity]
+      properties:
+        schemaVersion: { type: string, const: longhub/skill-package/v1 }
+        skill:
+          type: object
+          additionalProperties: false
+          required: [id, version, type, publisher, display]
+          properties:
+            id: { type: string, pattern: '^[a-z][a-z0-9.-]*\.skill\.[a-z][a-z0-9.-]*$' }
+            version: { type: string, pattern: '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$' }
+            type: { type: string, enum: [content, workflow, tool] }
+            publisher:
+              type: object
+              additionalProperties: false
+              required: [namespace, displayName]
+              properties:
+                namespace: { type: string, minLength: 1, maxLength: 64 }
+                displayName: { type: string, minLength: 1, maxLength: 80 }
+            display:
+              type: object
+              additionalProperties: false
+              required: [name, description, category, examples]
+              properties:
+                name: { type: string, minLength: 1, maxLength: 80 }
+                description: { type: string, minLength: 1, maxLength: 500 }
+                category: { type: string, minLength: 1, maxLength: 40 }
+                examples: { type: array, maxItems: 8, uniqueItems: true, items: { type: string, maxLength: 300 } }
+        compatibility:
+          type: object
+          additionalProperties: false
+          required: [minManagerVersion, openclawVersion, runtimeApiVersion]
+          properties:
+            minManagerVersion: { type: string }
+            openclawVersion: { type: string }
+            runtimeApiVersion: { type: string, pattern: '^\d+\.\d+$' }
+        binding:
+          type: object
+          additionalProperties: false
+          required: [allowedAgentProfileIds, defaultEnabled]
+          properties:
+            allowedAgentProfileIds: { type: array, minItems: 1, maxItems: 64, uniqueItems: true, items: { type: string } }
+            defaultEnabled: { type: boolean }
+        schemas:
+          type: object
+          additionalProperties: false
+          properties:
+            input: { type: string, pattern: '^[^\\/][^\\]*\.json$' }
+            output: { type: string, pattern: '^[^\\/][^\\]*\.json$' }
+        capabilities:
+          type: object
+          additionalProperties: false
+          required: [requiredSkillIds, connectorIds]
+          properties:
+            requiredSkillIds: { type: array, maxItems: 32, uniqueItems: true, items: { type: string } }
+            connectorIds: { type: array, maxItems: 16, uniqueItems: true, items: { type: string } }
+        permissions:
+          type: object
+          additionalProperties: false
+          required: [requested, confirmationClass]
+          properties:
+            requested: { type: array, maxItems: 64, uniqueItems: true, items: { type: string } }
+            confirmationClass: { type: string, enum: [none, per_execution] }
+        runtime:
+          oneOf:
+            - type: object
+              additionalProperties: false
+              required: [kind, implementationId]
+              properties:
+                kind: { type: string, const: builtin }
+                implementationId: { type: string }
+            - type: object
+              additionalProperties: false
+              required: [kind, format, entrypoint]
+              properties:
+                kind: { type: string, const: declarative }
+                format: { type: string, enum: [content-v1, workflow-v1] }
+                entrypoint: { type: string }
+            - type: object
+              additionalProperties: false
+              required: [kind, serviceId, apiVersion]
+              properties:
+                kind: { type: string, const: cloudRef }
+                serviceId: { type: string }
+                apiVersion: { type: string, pattern: '^\d+\.\d+$' }
+        limits:
+          type: object
+          additionalProperties: false
+          required: [maxPackageBytes, maxSteps, maxDurationMs, maxConcurrency, maxCostMicros]
+          properties:
+            maxPackageBytes: { type: integer, minimum: 1, maximum: 67108864 }
+            maxSteps: { type: integer, minimum: 1, maximum: 20 }
+            maxDurationMs: { type: integer, minimum: 1000, maximum: 600000 }
+            maxConcurrency: { type: integer, minimum: 1, maximum: 16 }
+            maxCostMicros: { type: integer, minimum: 0, maximum: 100000000 }
+        integrity:
+          type: object
+          additionalProperties: false
+          required: [algorithm, digest, signatureKeyId, signature]
+          properties:
+            algorithm: { type: string, const: sha256 }
+            digest: { type: string, pattern: '^[a-f0-9]{64}$' }
+            signatureKeyId: { type: string }
+            signature: { type: string, minLength: 64, maxLength: 1024 }
+    SkillCatalogPublisher:
+      type: object
+      additionalProperties: false
+      required: [namespace, displayName]
+      properties:
+        namespace: { type: string, minLength: 1, maxLength: 64 }
+        displayName: { type: string, minLength: 1, maxLength: 80 }
+    SkillCatalogItem:
+      type: object
+      additionalProperties: false
+      required: [skill_id, publisher, display, type, latest_version, versions, runtime_kind, compatibility, permissions, limits, entitled]
+      properties:
+        skill_id: { type: string }
+        publisher: { $ref: "#/components/schemas/SkillCatalogPublisher" }
+        display: { type: object }
+        type: { type: string, const: cloud_adapter }
+        latest_version: { type: string }
+        versions: { type: array, items: { type: string } }
+        runtime_kind: { type: string, const: cloud_adapter }
+        compatibility: { type: object }
+        permissions: { type: object }
+        limits: { type: object }
+        entitled: { type: boolean }
+        plan_ids:
+          type: array
+          uniqueItems: true
+          items: { type: string }
+        access_mode:
+          type: string
+          const: cloud_subscription
+        adapter_available: { type: boolean, const: true }
+        adapter_latest_version: { type: string }
+        adapter_versions: { type: array, items: { type: string } }
+    SkillCatalogList:
+      type: object
+      additionalProperties: false
+      required: [skills, filters]
+      properties:
+        skills: { type: array, items: { $ref: "#/components/schemas/SkillCatalogItem" } }
+        filters:
+          type: object
+          additionalProperties: false
+          properties:
+            q: { type: string }
+            category: { type: string }
+            manager_version: { type: string }
+            openclaw_version: { type: string }
+    SkillReference:
+      type: object
+      deprecated: true
+      description: 历史 Skill Package 引用；clean-launch 使用 CloudSkillAdapterDownload。
+      additionalProperties: false
+      required: [package, digest, signature_key_id]
+      properties:
+        package: { $ref: "#/components/schemas/SkillPackage" }
+        digest: { type: string, pattern: '^[a-f0-9]{64}$' }
+        signature_key_id: { type: string }
+    # The publish request may omit integrity; Cloud recomputes and signs it.
+    # Keep the core fields in a separate schema so the signed response can make
+    # integrity mandatory without forcing publishers to supply ignored values.
+    CloudSkillAdapterManifest:
+      type: object
+      allOf:
+        - $ref: "#/components/schemas/CloudSkillAdapterManifestFields"
+        - type: object
+          required: [integrity]
+    CloudSkillAdapterPublishManifest:
+      allOf:
+        - $ref: "#/components/schemas/CloudSkillAdapterManifestFields"
+      description: integrity 可省略；若提供也不构成信任输入，Cloud 会根据固定文件重新计算摘要并签名。
+    CloudSkillAdapterManifestFields:
+      type: object
+      additionalProperties: false
+      required: [schema_version, skill_id, version, display, service, schemas, files, subscription, permissions, compatibility]
+      properties:
+        schema_version: { type: string, const: longhub/cloud-skill-adapter/v1 }
+        skill_id: { type: string, pattern: '^[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-])*\.skill\.[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-])*$' }
+        version: { type: string, pattern: '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$' }
+        display:
+          type: object
+          additionalProperties: false
+          required: [name, description, category]
+          properties:
+            name: { type: string, minLength: 1, maxLength: 80 }
+            description: { type: string, minLength: 1, maxLength: 500 }
+            category: { type: string, minLength: 1, maxLength: 40 }
+        service:
+          type: object
+          additionalProperties: false
+          required: [service_id, api_version, entry]
+          properties:
+            service_id: { type: string, pattern: '^[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*)+$' }
+            api_version: { type: string, pattern: '^(0|[1-9]\d*)\.(0|[1-9]\d*)$' }
+            entry: { type: string, const: local-longhub-bridge }
+        schemas:
+          type: object
+          additionalProperties: false
+          required: [input, output]
+          properties:
+            input: { type: string, const: schemas/input.json }
+            output: { type: string, const: schemas/output.json }
+        # The manifest declares ordered file metadata; the download envelope
+        # carries the separate Base64 file map.
+        files:
+          type: array
+          minItems: 3
+          maxItems: 3
+          prefixItems:
+            - allOf:
+                - $ref: "#/components/schemas/CloudSkillAdapterFile"
+                - type: object
+                  properties: { path: { const: SKILL.md } }
+            - allOf:
+                - $ref: "#/components/schemas/CloudSkillAdapterFile"
+                - type: object
+                  properties: { path: { const: schemas/input.json } }
+            - allOf:
+                - $ref: "#/components/schemas/CloudSkillAdapterFile"
+                - type: object
+                  properties: { path: { const: schemas/output.json } }
+          items: false
+        subscription:
+          type: object
+          additionalProperties: false
+          required: [plan_ids]
+          properties:
+            plan_ids: { type: array, minItems: 1, maxItems: 32, uniqueItems: true, items: { type: string } }
+        permissions:
+          type: object
+          additionalProperties: false
+          required: [requested, confirmation_class]
+          properties:
+            requested: { type: array, maxItems: 64, uniqueItems: true, items: { type: string } }
+            confirmation_class: { type: string, enum: [none, per_execution] }
+        compatibility:
+          type: object
+          additionalProperties: false
+          required: [manager_min_version, openclaw_version]
+          properties:
+            manager_min_version: { type: string }
+            openclaw_version: { type: string }
+        integrity:
+          type: object
+          additionalProperties: false
+          required: [algorithm, digest, signature_key_id, signature]
+          properties:
+            algorithm: { type: string, const: sha256 }
+            digest: { type: string, pattern: '^[a-f0-9]{64}$' }
+            signature_key_id: { type: string }
+            signature: { type: string, pattern: '^[A-Za-z0-9+/]{86}==$' }
+    CloudSkillAdapterFile:
+      type: object
+      additionalProperties: false
+      required: [path, sha256, size]
+      properties:
+        path: { type: string, enum: [SKILL.md, schemas/input.json, schemas/output.json] }
+        sha256: { type: string, pattern: '^[a-f0-9]{64}$' }
+        size: { type: integer, minimum: 1, maximum: 4194304 }
+    CloudSkillAdapterFiles:
+      type: object
+      additionalProperties: false
+      required: [SKILL.md, schemas/input.json, schemas/output.json]
+      properties:
+        SKILL.md: { type: string, contentEncoding: base64, maxLength: 5592408 }
+        schemas/input.json: { type: string, contentEncoding: base64, maxLength: 5592408 }
+        schemas/output.json: { type: string, contentEncoding: base64, maxLength: 5592408 }
+    CloudSkillAdapterDownload:
+      type: object
+      additionalProperties: false
+      required: [adapter, digest, signature_key_id]
+      properties:
+        adapter:
+          type: object
+          additionalProperties: false
+          required: [manifest, files]
+          properties:
+            manifest: { $ref: "#/components/schemas/CloudSkillAdapterManifest" }
+            files: { $ref: "#/components/schemas/CloudSkillAdapterFiles" }
+        digest: { type: string, pattern: '^[a-f0-9]{64}$' }
+        signature_key_id: { type: string }
+    CloudSkillAdapterCompatibility:
+      type: object
+      additionalProperties: false
+      required: [manager_min_version, openclaw_version]
+      properties:
+        manager_min_version: { type: string }
+        openclaw_version: { type: string }
+    CloudSkillAdapterReleaseSummary:
+      type: object
+      additionalProperties: false
+      required: [skill_id, version, status, digest, signature_key_id]
+      properties:
+        skill_id: { type: string }
+        version: { type: string }
+        status: { type: string, enum: [active, revoked] }
+        digest: { type: string, pattern: '^[a-f0-9]{64}$' }
+        signature_key_id: { type: string }
+        min_manager_version: { type: string }
+        openclaw_version: { type: string }
+        compatibility: { $ref: "#/components/schemas/CloudSkillAdapterCompatibility" }
+        created_at: { type: string, format: date-time }
+        revoked_at: { type: string, format: date-time }
+    CloudAgentSkillBinding:
+      type: object
+      additionalProperties: false
+      required: [binding_id, tenant_id, device_id, agent_id, skill_id, status, created_at]
+      properties:
+        binding_id: { type: string }
+        tenant_id: { type: string }
+        device_id: { type: string }
+        user_id: { type: string }
+        agent_id: { $ref: "#/components/schemas/TaskAgentIdValue" }
+        skill_id: { type: string }
+        status: { type: string, enum: [active, revoked] }
+        created_at: { type: string, format: date-time }
+        revoked_at: { type: string, format: date-time }
+    CloudAgentSkillBindingEnvelope:
+      type: object
+      additionalProperties: false
+      required: [binding]
+      properties:
+        binding: { $ref: "#/components/schemas/CloudAgentSkillBinding" }
+    SkillReleaseSummary:
+      type: object
+      additionalProperties: false
+      required: [skill_id, version, status, digest, signature_key_id]
+      properties:
+        skill_id: { type: string }
+        version: { type: string }
+        status: { type: string, enum: [active, revoked] }
+        digest: { type: string }
+        signature_key_id: { type: string }
+        created_at: { type: string, format: date-time }
+        revoked_at: { type: string, format: date-time }
     PackSummary:
       type: object
-      required: [pack_id, name, latest_version, min_desktop_version]
+      deprecated: true
+      description: 历史 Pack 摘要；clean-launch 目录使用 SkillCatalogItem。
+      required: [pack_id, name, latest_version, min_manager_version]
       properties:
         pack_id:
           type: string
@@ -1287,7 +3623,7 @@ components:
           type: string
         latest_version:
           type: string
-        min_desktop_version:
+        min_manager_version:
           type: string
         capabilities:
           type: array
@@ -1301,6 +3637,8 @@ components:
                 type: string
     PackList:
       type: object
+      deprecated: true
+      description: 历史 Pack 列表；clean-launch 目录使用 SkillCatalogList。
       required: [packs]
       properties:
         packs:
@@ -1311,6 +3649,8 @@ components:
           type: string
     Entitlement:
       type: object
+      deprecated: true
+      description: 历史设备/Pack entitlement；clean-launch 使用 CloudSkillEntitlement。
       required: [entitlement_id, pack_id, scope, status, expires_at]
       properties:
         entitlement_id:
@@ -1328,9 +3668,11 @@ components:
           format: date-time
     ReleaseCheckRequest:
       type: object
-      required: [desktop_version, installed_packs]
+      deprecated: true
+      description: 历史客户端/Pack 更新检查；clean-launch Manager 使用客户端发布端点和适配器目录。
+      required: [manager_version, installed_packs]
       properties:
-        desktop_version:
+        manager_version:
           type: string
         channel:
           type: string
@@ -1348,9 +3690,11 @@ components:
                 type: string
     ReleaseCheckResponse:
       type: object
-      required: [desktop, packs]
+      deprecated: true
+      description: 历史客户端/Pack 更新响应。
+      required: [manager, packs]
       properties:
-        desktop:
+        manager:
           $ref: "#/components/schemas/ReleaseAdvice"
         packs:
           type: array
@@ -1392,6 +3736,8 @@ components:
           type: string
     PackReleaseSummary:
       type: object
+      deprecated: true
+      description: 历史 Pack 发布摘要；clean-launch 使用 CloudSkillAdapterReleaseSummary。
       required: [pack_id, version, status]
       properties:
         pack_id:
@@ -1410,6 +3756,8 @@ components:
           format: date-time
     PackDownload:
       type: object
+      deprecated: true
+      description: 历史 Pack 下载响应；clean-launch 不分发 Pack 制品。
       required: [pack, digest, signature_key_id]
       properties:
         pack:
@@ -1419,31 +3767,75 @@ components:
           type: string
         signature_key_id:
           type: string
-    TaskCreateRequest:
+    CloudSkillCallV1:
       type: object
+      additionalProperties: false
+      required: [schema_version, request_id, kind, skill_id, skill_version, agent_id, tool_call_id, session_key_hash, idempotency_key, input]
+      description: >-
+        生产 Cloud Skill 调用 envelope。Idempotency-Key HTTP header 必须与 body.idempotency_key 相同；
+        Cloud API 在签发 Executor 凭据前完成订阅、entitlement、用量和策略门禁。
+      properties:
+        schema_version: { type: string, const: longhub/cloud-skill-call/v1 }
+        request_id:
+          type: string
+          pattern: '^[A-Za-z0-9][A-Za-z0-9._~:-]{0,127}$'
+        kind: { type: string, const: skill.execute }
+        skill_id:
+          type: string
+          pattern: '^[a-z0-9][a-z0-9._-]{2,127}$'
+        skill_version:
+          type: string
+          pattern: '^[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}$'
+        agent_id:
+          type: string
+          pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'
+        tool_call_id:
+          type: string
+          pattern: '^[A-Za-z0-9][A-Za-z0-9._~:-]{0,127}$'
+        session_key_hash:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+        idempotency_key:
+          type: string
+          pattern: '^[A-Za-z0-9][A-Za-z0-9._~:-]{0,127}$'
+        plan_id:
+          type: string
+          pattern: '^[A-Za-z0-9][A-Za-z0-9._~:-]{0,127}$'
+          description: 可选的候选计划；不能单独授予访问权，也不会转发给 Executor
+        input:
+          type: object
+          description: 仅包含已签名 Skill Schema 允许的业务字段；不得携带身份、幂等或 plan 元数据
+          additionalProperties: true
+    LegacyTaskCreateRequest:
+      type: object
+      deprecated: true
+      additionalProperties: false
+      description: 仅供 allowDevelopmentTasks 测试兼容的旧 envelope，生产 Cloud API 默认拒绝
       required: [kind, input]
       properties:
-        kind:
-          type: string
-          description: 任务类型，如 skill.execute
-        input: {}
-        budget:
+        kind: { type: string, const: skill.execute }
+        input:
           type: object
+          description: 旧客户端可在 input 中使用 skillId/planId；不构成生产授权
           properties:
-            max_tokens:
-              type: integer
-              minimum: 1
-            max_cost_cents:
-              type: integer
-              minimum: 0
-            max_duration_ms:
-              type: integer
-              minimum: 1
+            skill_id: { type: string }
+            skillId: { type: string, deprecated: true }
+            plan_id: { type: string }
+            planId: { type: string, deprecated: true }
+          additionalProperties: true
+    TaskCreateRequest:
+      $ref: "#/components/schemas/CloudSkillCallV1"
     Task:
       type: object
-      required: [task_id, kind, status, created_at]
+      required: [task_id, tenant_id, device_id, agent_id, kind, status, created_at]
       properties:
         task_id:
+          type: string
+        tenant_id:
+          type: string
+        device_id:
+          type: string
+        agent_id:
           type: string
         kind:
           type: string

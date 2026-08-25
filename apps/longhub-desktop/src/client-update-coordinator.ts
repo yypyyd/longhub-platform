@@ -124,7 +124,7 @@ function copySnapshotEntry(source: string, target: string, budget: { bytes: numb
 }
 
 function validInstallerPath(path: string, version: string, trustedRoot?: string): boolean {
-  if (!isAbsolute(path) || basename(path) !== `LongHub-Setup-${version}.exe` || !existsSync(path)) return false;
+  if (!isAbsolute(path) || basename(path) !== `LongHub-Manager-Setup-${version}.exe` || !existsSync(path)) return false;
   if (trustedRoot) ensureSafeDirectory(trustedRoot, dirname(path));
   if (resolve(realpathSync.native(path)).toLowerCase() !== resolve(path).toLowerCase()) return false;
   const stat = lstatSync(path);
@@ -132,7 +132,7 @@ function validInstallerPath(path: string, version: string, trustedRoot?: string)
 }
 
 function validInstallerReference(path: string, version: string): boolean {
-  return isAbsolute(path) && basename(path) === `LongHub-Setup-${version}.exe`;
+  return isAbsolute(path) && basename(path) === `LongHub-Manager-Setup-${version}.exe`;
 }
 
 /** 管理可信安装器库存、安装前快照、失败恢复和跨版本健康标记。 */

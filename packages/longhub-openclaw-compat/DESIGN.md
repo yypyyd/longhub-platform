@@ -34,6 +34,34 @@ SHA-256 摘要用于升级审查：契约字段变化会让测试失败，要求
 模型和设置入口隐藏只改善产品体验；云端强制模型覆盖、同源导航、Gateway Token 和 Core 在线
 授权才是安全边界。兼容模块不接收远端配置、不执行命令，也不允许云端覆盖选择器或 RPC 方法。
 
+### Product Extension Surface V1
+
+主 WebUI 继续没有 preload、Node 或通用 IPC。它只能触发
+`longhub-extension://open/{agents|skills|account}` 三个精确入口；入口解析拒绝 query、fragment、凭据、
+端口、额外路径和 confirmations 直达。子窗口资源固定为 `longhub-product://app` 独立 origin 下的四条
+路由，005 实现时必须把该 scheme 注册为 standard、secure 且只从签名应用资源提供内容。
+
+子窗口固定 `contextIsolation=true`、`sandbox=true`、`nodeIntegration=false`、
+`webSecurity=true`、`allowRunningInsecureContent=false`。V1 preload 只能暴露 context-read 和
+window-close 两个 channel；每次请求严格绑定 UUID window_id、route entry、action 和 32 字节
+base64url 一次性 nonce。新增文件、保存、麦克风、截图或业务动作必须建立新的单用途 channel 和契约
+版本，不能复用这两个 channel 传任意 payload。
+
+威胁模型覆盖：恶意聊天内容伪造链接、跨 origin 导航、同窗口 confused deputy、nonce 重放、Renderer
+字段走私、Cloud 内容替换本机签名资源、preload 权限膨胀和上游 DOM 漂移。Feature Policy 与 Core
+执行鉴权仍是最终授权；扩展面只提供受限展示和请求入口。
+
+### OpenClaw Native Surface V3
+
+主导航直接恢复锁定版 OpenClaw 官方侧边栏，不复制 Agents、Skills、Sessions、Usage、Activity 或 Tasks
+页面。契约以同源、精确 basePath 和路由白名单开放这些原生页面；所有未登记路径默认拒绝。Agents 页面
+只允许 Overview、Tools、Skills、Channels 查看，Files/Cron 和模型/工具/技能配置控件被移除；Skills
+页面只允许目录、详情与安全报告查看，ClawHub 安装、启停、依赖安装和 API Key 编辑被移除。
+
+UI 收口只负责产品体验和误操作防护，不是执行授权。模型覆盖、Skill 安装、CloudRef 调用、Pack 生命周期、
+entitlement、预算和写操作仍由 Cloud/Core 在执行点复验。旧独立 sandbox webContents 只保留确认、文件、
+可恢复删除等上游没有安全原生面的单用途能力，不再注入“智能体 / 能力 / 我的”主导航。
+
 ## 已知限制
 
 - 当前契约仍登记少量 OpenClaw 私有 DOM/CSS 和 `selectAgent()` 宿主方法。
@@ -43,6 +71,41 @@ SHA-256 摘要用于升级审查：契约字段变化会让测试失败，要求
 - UI 产品化仍依赖少量锁定版 class；正式视觉稿可以替换同名资源，但选择器变化必须重新验收。
 
 ## 变更历史
+
+### 2026-08-01 - 恢复官方原生导航与安全页面
+
+**变更内容**：普通用户开放 Chat、Activity、Agents、Sessions、Usage、Tasks、Skills 官方路由；删除自制
+三入口注入，增加精确 basePath 路由白名单和 Agents/Skills 高风险控件契约。
+
+**变更理由**：仿原生同壳仍与 OpenClaw 官方页面不一致，也让 Agent 切换和 Skill 发现出现双重入口。
+
+**影响范围**：Desktop 导航、产品 CSS、Agents 初始面板、OpenClaw 升级回归与安全文档。
+
+**决策依据**：尽量零复制复用上游页面；只在控制面、凭据、任意执行和私有 Skill 分发边界收口。
+
+**兼容摘要**：`EDC310A59F7B4C029C77A8FD5B98F8F9AFC0A433E04C6192E46CC1DC3415C88F`。
+
+### 2026-07-31 - 冻结 Product Native Shell V2
+
+**变更内容**：增加同壳纵向导航、单 Agent 常显 Selector、抽屉视觉区和智能体管理动作；OpenClaw
+兼容摘要更新为 `6BCD8EB1D6D6EB56B409EBA60F38BD42B68664207BAA53D954045E0831CB28B3`，产品扩展面摘要更新为
+`87184A95526757029FA13C82B18DF7478626B7E99518FC9B4174379D9EF73208`。
+
+**变更理由**：0.8.2 的入口可见性通过，但横排裸链接、独立页面和单 Agent 隐藏不满足原生产品验收。
+
+**影响范围**：Desktop 入口、Selector、智能体管理、隔离抽屉和真实 UI 基线。
+
+### 2026-07-30 - 冻结 Product Extension Surface V1
+
+**变更内容**：登记三入口、四路由、独立 origin、窗口参数、最小 IPC、动作绑定、视觉区域和严格解析
+函数；005 登记固定入口挂载点和标签后，独立契约摘要为
+`50EE109D6EA808160143517B0466C41D0A2DB8A5ECA3746A1702A898B4D46939`（006 增加三个确认
+单用途 channel 后）。
+
+**变更理由**：005/006 需要先共享不可放宽的窗口与 IPC 边界，避免新增入口继续扩大 OpenClaw DOM
+补丁或给主 WebUI 暴露 Electron 权限。
+
+**影响范围**：后续 Desktop 产品子窗口、preload、导航策略、确认中心和 OpenClaw 升级审查。
 
 ### 2026-07-29 - 扩展龙枢产品 UI 契约
 

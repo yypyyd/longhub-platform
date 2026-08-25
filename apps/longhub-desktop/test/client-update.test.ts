@@ -44,15 +44,16 @@ function signed(
 ): SignedClientUpdateMetadata {
   const manifest: ClientUpdateManifest = {
     schema_version: CLIENT_UPDATE_SCHEMA,
+    product_surface: "longhub-manager",
     sequence,
     version,
     channel: "stable",
     platform: "win32",
     arch: "x64",
-    filename: `LongHub-Setup-${version}.exe`,
+    filename: `LongHub-Manager-Setup-${version}.exe`,
     size: content.length,
     sha256: clientUpdateDigest(content),
-    url_path: `/downloads/LongHub-Setup-${version}.exe`,
+    url_path: `/downloads/LongHub-Manager-Setup-${version}.exe`,
     published_at: "2026-07-29T12:00:00.000Z",
     rollback_data_strategy: "snapshot_required",
     rollout,
@@ -94,7 +95,7 @@ describe("Desktop 客户端更新可信验证", () => {
     const result = await verifier(root, key, signed(key, 8)).check();
     expect(result).toMatchObject({
       action: "update_available",
-      artifactUrl: "https://cloud.example/downloads/LongHub-Setup-0.5.0.exe",
+      artifactUrl: "https://cloud.example/downloads/LongHub-Manager-Setup-0.5.0.exe",
     });
     expect(JSON.parse(readFileSync(join(root, "update-state.json"), "utf8"))).toMatchObject({
       channels: { stable: { sequence: 8 } },
@@ -167,7 +168,7 @@ describe("Desktop 客户端更新可信验证", () => {
     });
     await expect(verifier(root, key, paused).fetchVersion("0.4.0")).resolves.toMatchObject({
       metadata: { manifest: { version: "0.4.0" } },
-      artifactUrl: "https://cloud.example/downloads/LongHub-Setup-0.4.0.exe",
+      artifactUrl: "https://cloud.example/downloads/LongHub-Manager-Setup-0.4.0.exe",
     });
 
     const rollbackRecord = join(root, "last-rollback.json");
@@ -212,7 +213,7 @@ describe("Desktop 客户端更新可信验证", () => {
     const metadata = signed(key, 1, "0.5.0", content);
     const invoke = (body: Buffer, headers?: Record<string, string>) => downloadTrustedClientUpdate({
       metadata,
-      artifactUrl: "https://cloud.example/downloads/LongHub-Setup-0.5.0.exe",
+      artifactUrl: "https://cloud.example/downloads/LongHub-Manager-Setup-0.5.0.exe",
       directory: root,
       fetchImpl: async () => new Response(body, { status: 200, headers }),
     });
@@ -231,7 +232,7 @@ describe("Desktop 客户端更新可信验证", () => {
     let fetches = 0;
     const options = {
       metadata,
-      artifactUrl: "https://cloud.example/downloads/LongHub-Setup-0.5.0.exe",
+      artifactUrl: "https://cloud.example/downloads/LongHub-Manager-Setup-0.5.0.exe",
       directory: root,
       fetchImpl: async () => {
         fetches += 1;

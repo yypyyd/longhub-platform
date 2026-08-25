@@ -1,5 +1,8 @@
 # LongHub Desktop
 
+> 历史/废弃：这是旧 Electron/内嵌 OpenClaw Control UI 客户端的存档，不是 clean-launch 首发
+> Manager，也不作为当前下载、安装、授权或部署流程。当前产品只使用 `apps/longhub-manager`。
+
 龙枢 Windows 客户端宿主。它直接显示内嵌 OpenClaw Control UI，并在 Electron Main 中协调
 Gateway、LongHub Core、Skill Worker、Agent Pack 与本机安全边界。
 
@@ -31,6 +34,10 @@ Gateway、LongHub Core、Skill Worker、Agent Pack 与本机安全边界。
   连续失败计数。配置错误和重启耗尽进入固定错误码安全页，不显示 URL、Token、本机路径或上游正文。
 - 获取运行配置时最多进行三次指数退避；只有网络、429/5xx 瞬时故障耗尽后才使用同 Cloud、同设备、
   未过期且最长十分钟的严格缓存。401/403、协议或字段不兼容、过期和损坏缓存均安全失败。
+- 已激活后每 30 秒从独立端点刷新 Feature Policy V2，并使用单独的同 Cloud、同设备、最长五分钟缓存。
+  401/403、协议错误、未知字段、超限响应和符号链接缓存均安全失败；瞬时离线只允许低风险功能使用
+  未过期缓存，高风险功能固定返回 POLICY_OFFLINE，紧急停用在下一次刷新后立即覆盖本地判定。刷新
+  同时携带当前打包版本，Cloud 在设备鉴权后同步该设备版本，避免升级后沿用首次注册版本。
 - 固定产品错误页可一键导出 `longhub/diagnostic-export/v1` JSON；报告只含白名单状态，不收集日志、
   聊天、用户文件、设备 ID、服务 URL、Token、端口、PID 或本机路径，且不会自动上传。
 - 已激活后启用严格匿名运行指标，只记录版本、启动耗时/Agent 数量桶、Gateway 枚举状态、更新结果和
@@ -39,29 +46,53 @@ Gateway、LongHub Core、Skill Worker、Agent Pack 与本机安全边界。
 - 使用独立 `userData/openclaw` 状态、配置、workspace 和动态回环端口托管锁定版 Gateway。
 - 从云端取得唯一的 `longhub/longhub-default` 模型配置，客户端不允许选择真实模型。
 - 验签安装 Agent Pack，维护稳定 Agent Registry，并编译 `main + 已启用 Profile`。
+- 维护独立、设备/Cloud owner hash 绑定的 Skill Registry；Skill 版本与每个 Agent 的启用状态分离，
+  使用原子 current/backup 提交，支持严格 v0 迁移和损坏回退但不跨 owner 恢复。
+- 通过固定 `assets/skill-trusted-keys.json` 提供打包态 Skill 信任根；环境变量覆盖只允许未打包开发态，
+  `pending` 清单允许内部候选但不能通过正式发布门禁。
 - 每 30 秒组合云端 catalog 与设备 entitlement，把客户端锁定认识、已授权但未安装的 Agent 放入
   原生 Selector；一次点击完成下载、验签、信任持久化、激活和专属会话进入。
 - 使用 OpenClaw `config.patch + baseHash` 运行时启停 Agent，并回读 `agents.list`。
 - 同步 entitlement；撤销时先关闭 Core 工具策略，再从原生 Selector 移除 Agent。
 - 维护原生 Selector 允许列表，恢复目标 Agent 最近会话，并在活动执行结束或用户确认停止后切换。
 - 注入版本化龙枢产品 UI：统一龙枢头像、中文状态、可读会话标题与普通用户导航；不改写聊天消息。
+- 恢复 OpenClaw 官方侧边栏和 `/activity`、`/agents`、`/sessions`、`/usage`、`/tasks`、`/skills` 原生页；
+  设置、Gateway、Channels、Cron、Nodes、Debug、Logs、插件和其他控制面路由继续拒绝。
+- Agents 与 Skills 保持上游页面结构，但普通用户只获得查看、筛选和状态能力；核心文件、模型、工具/技能
+  配置、Cron 立即执行、ClawHub 安装和 API Key 编辑控件由版本化兼容策略移除。安全边界仍是 Cloud、Core、
+  entitlement 与执行时复验，不能把隐藏控件当作授权。
+- 会话能力使用官方 Sessions 页面；额外的可恢复删除与保留期管理仍由独立 origin sandbox 承载。文件通过
+  原生选择器签发一次性 Agent/Session 句柄，隔离子进程完成类型、大小、超时和容器门禁后才进入公开
+  `chat.send`，企业知识引用与当前设备个人资料不暴露本机路径。
+- “智能体”首先提供当前 Agent、真实切换、安装和启停；单 Agent 时也显示当前值和添加入口。Content
+  Skill、OpenClaw `SKILL.md` 纯内容降权导入、受限 Workflow、用户覆盖层和摘要转交归入二级“创建与编排”。
 - 通过受限 Tool Bridge 将可信 agent/session/toolCall 上下文交给 Core。
+- 写权限录用通知 ToolCall 会保持等待并打开独立确认中心，显示 Core 绑定的智能体、Skill、动作、对象、
+  接收方、数据范围、权限、费用和倒计时；批准只重试同一请求，拒绝、关闭、离线和过期都不执行。
 
 本模块不负责真实模型路由、租户计费、企业技能业务逻辑或最终权限计算；这些分别属于 Cloud API、
 Core 与 Skill Worker。
 
-后续普通用户功能和 Skill 不恢复 OpenClaw 底层设置页，而是在 `/chat` 内使用受版本约束的产品薄入口；
-文件、麦克风、截图和保存只允许单用途本机请求。开放矩阵与实施状态见
+普通用户功能优先复用经过审查的 OpenClaw 原生页，不恢复底层设置页和任意执行入口；
+文件选择与附件解析只允许单用途本机请求，麦克风、截图和任意文件写入仍未开放。开放矩阵与实施状态见
 [普通用户功能开放策略](../../PRODUCT_FEATURE_POLICY.md) 和
 [Skill 开放设计](../../SKILL_PLATFORM.md)；任务顺序以
 [V2 执行计划](../../EXECUTION_PLAN_V2.md) 为准。
 
 ## 依赖关系
 
-Desktop 依赖 `@longhub/core`、Pack Schema、HR 样例 Pack、OpenClaw Bridge、
+Desktop 依赖 `@longhub/core`、`@longhub/feature-policy`、Pack Schema、HR 样例 Pack、OpenClaw Bridge、
 `@longhub/openclaw-compat` 和锁定版
 `openclaw@2026.7.1-2`。Electron Main 使用 Cloud API 获取设备凭据、模型配置、Pack 和 entitlement；
 Control UI 只连接本机 Gateway。
+
+0.8.2 内部候选及 0.7/0.8 累计验收复盘见
+[LH-V2-036](../../docs/validation/LH-V2-036-08-candidate.md)。0.8.0 已因真实安装态菜单、头像和入口可见性
+问题退回；0.8.1 修复菜单与头像后又暴露入口只注入一次、会被 OpenClaw 重渲染移除的问题。0.8.2 使用
+MutationObserver 持续协调入口，生产当前 QA 设备的三项设备级策略均已开放，真实安装窗口已显示
+“智能体 / 能力 / 我的”，但真实用户复验又发现横排红字、独立页面视觉割裂和智能体页无法切换。0.8.3
+继续用自制同壳抽屉修正后仍被确认偏离需求；当前实现已改为直接恢复上游原生导航和安全页面。安装包与
+主程序未签名，只允许内部验证。
 
 ## 开发与验证
 
@@ -131,3 +162,9 @@ Gateway 运行中故障恢复、真实 `/chat` 健康门槛和固定错误码安
 [LH-040-14 遥测边界验收记录](../../docs/validation/LH-040-14-client-telemetry.md)。
 上一进程退出只由本地严格 `client-run-marker.json` 在下一次启动推导，不收集崩溃转储或堆栈；完整定义见
 [LH-040-15 健康指标验收记录](../../docs/validation/LH-040-15-health-metrics-dashboard.md)。
+Feature Policy 的设备绑定缓存、ETag、离线风险边界、紧急撤销和并发刷新证据见
+[LH-V2-003 验收记录](../../docs/validation/LH-V2-003-desktop-feature-policy.md)。
+受限产品入口、独立 origin、真实 Electron 窗口隔离和视觉基线见
+[LH-V2-005 验收记录](../../docs/validation/LH-V2-005-restricted-entry-shell.md)。
+0.8.3 同壳导航、单 Agent 常显和真实智能体管理修正见
+[LH-V2-050 验收记录](../../docs/validation/LH-V2-050-083-native-shell.md)。

@@ -16,6 +16,7 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
     "start": "node dist/main.js"
   },
   "dependencies": {
@@ -23,6 +24,7 @@
   },
   "devDependencies": {
     "typescript": "^5.7.3",
-    "@types/node": "^20.17.12"
+    "@types/node": "^20.17.12",
+    "vitest": "^2.1.8"
   }
 }

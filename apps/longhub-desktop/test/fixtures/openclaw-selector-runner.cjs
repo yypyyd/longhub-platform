@@ -40,7 +40,27 @@ async function selectAgent(webContents, agentId) {
   })()`);
 }
 
+async function navigateToSuffix(webContents, suffix) {
+  const clicked = await webContents.executeJavaScript(`(() => {
+    const suffix = ${JSON.stringify(suffix)};
+    const link = Array.from(document.querySelectorAll('a[href]')).find((candidate) => {
+      try {
+        return new URL(candidate.href, location.href).pathname.replace(/\\/+$/, '') ===
+          location.pathname.replace(/\\/+$/, '').replace(/\\/[^/]+$/, '') + suffix;
+      } catch {
+        return false;
+      }
+    });
+    if (!link) return false;
+    link.click();
+    return true;
+  })()`);
+  if (!clicked) throw new Error(`找不到官方原生导航: ${suffix}`);
+  await waitUntil(webContents, `location.pathname.replace(/\\/+$/, '').endsWith(${JSON.stringify(suffix)})`);
+}
+
 app.whenReady().then(async () => {
+  let phase = "create-window";
   const window = new BrowserWindow({
     show: false,
     width: input.viewport.width,
@@ -49,6 +69,7 @@ app.whenReady().then(async () => {
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
   try {
+    phase = "load-chat";
     await window.loadURL(input.controlUiUrl);
     await waitUntil(window.webContents, `Array.from(document.querySelectorAll('*')).some((element) => typeof element.selectAgent === 'function')`);
     await window.webContents.insertCSS(input.productCss + `
@@ -59,7 +80,9 @@ app.whenReady().then(async () => {
     await waitUntil(window.webContents, `document.documentElement.dataset.longhubProductUi === 'v1'`);
     await waitUntil(window.webContents, `document.querySelectorAll('select[data-chat-agent-filter="true"] option').length >= 2`);
     await waitUntil(window.webContents, `document.querySelector('select[data-chat-agent-filter="true"]')?.dataset.longhubSelectorPolicy === 'v1'`);
+    await waitUntil(window.webContents, `document.querySelector('.sidebar-nav')`);
     const initial = await selectorSnapshot(window.webContents);
+    phase = "capture-ui-contract";
     const uiContract = await window.webContents.executeJavaScript(`(() => {
       const visible = (element) => {
         if (!element) return false;
@@ -69,6 +92,16 @@ app.whenReady().then(async () => {
       const modelSelectors = ${JSON.stringify(input.modelControlSelectors)};
       const restrictedSelectors = ${JSON.stringify(input.restrictedNavigationSelectors)};
       const ordinaryUserHiddenSelectors = ${JSON.stringify(input.ordinaryUserHiddenSelectors)};
+      const ordinaryUserRestrictedControls = ${JSON.stringify(input.ordinaryUserRestrictedControls)};
+      const ordinaryUserPathSuffixes = ${JSON.stringify(input.ordinaryUserPathSuffixes)};
+      const normalizedPath = (value) => value.replace(/\\/+$/, '') || '/';
+      const routeVisible = (suffix) => Array.from(document.querySelectorAll('a[href]')).some((link) => {
+        try {
+          return normalizedPath(new URL(link.href, location.href).pathname).endsWith(suffix) && visible(link);
+        } catch {
+          return false;
+        }
+      });
       return {
         contractDigest: ${JSON.stringify(input.contractDigest)},
         agentSelectorVisible: visible(document.querySelector('select[data-chat-agent-filter="true"]')),
@@ -99,9 +132,19 @@ app.whenReady().then(async () => {
         visibleModelControls: modelSelectors.flatMap((selector) => Array.from(document.querySelectorAll(selector))).filter(visible).length,
         visibleRestrictedNavigation: restrictedSelectors.flatMap((selector) => Array.from(document.querySelectorAll(selector))).filter(visible).length,
         visibleOrdinaryUserHidden: ordinaryUserHiddenSelectors.flatMap((selector) => Array.from(document.querySelectorAll(selector))).filter(visible).length,
+        officialSidebarVisible: visible(document.querySelector('.sidebar-nav')),
+        officialNativeRoutes: ordinaryUserPathSuffixes.filter((suffix) => suffix !== '/chat' && routeVisible(suffix)).map((suffix) => suffix.slice(1)),
+        productEntries: Array.from(document.querySelectorAll('[data-longhub-extension-entry]'))
+          .filter(visible)
+          .map((entry) => entry.getAttribute('aria-label')),
+        visibleRestrictedControls: ordinaryUserRestrictedControls.flatMap((selector) => Array.from(document.querySelectorAll(selector))).filter(visible).length,
+        brokenVisibleImages: Array.from(document.images)
+          .filter((image) => visible(image) && image.complete && image.naturalWidth === 0)
+          .length,
         hasNode: typeof window.process !== 'undefined' || typeof window.require !== 'undefined',
       };
     })()`);
+    phase = "capture-visual-baseline";
     await new Promise((resolve) => setTimeout(resolve, 250));
     const screenshot = await window.webContents.capturePage(input.stableCaptureRect);
     const size = screenshot.getSize();
@@ -142,6 +185,7 @@ app.whenReady().then(async () => {
       },
     };
 
+    phase = "selector-flow";
     await selectAgent(window.webContents, input.hrAgentId);
     await waitUntil(
       window.webContents,
@@ -195,9 +239,41 @@ app.whenReady().then(async () => {
       policy: 'v1',
     })`);
 
+    phase = "navigate-agents";
+    await navigateToSuffix(window.webContents, "/agents");
+    await waitUntil(window.webContents, `document.querySelector(${JSON.stringify(input.agentsPage)})`);
+    await waitUntil(window.webContents, `document.querySelector(${JSON.stringify(input.agentsPage)})?.[${JSON.stringify(input.agentsPanelProperty)}] === 'overview'`);
+    const agentsPageState = await window.webContents.executeJavaScript(`(() => {
+      const visible = (element) => element && getComputedStyle(element).display !== 'none' && getComputedStyle(element).visibility !== 'hidden';
+      const selectors = ${JSON.stringify(input.ordinaryUserRestrictedControls)};
+      return {
+        agentsPanel: document.querySelector(${JSON.stringify(input.agentsPage)})?.[${JSON.stringify(input.agentsPanelProperty)}] ?? null,
+        restrictedControls: selectors.flatMap((selector) => Array.from(document.querySelectorAll(selector))).filter(visible).length,
+      };
+    })()`);
+
+    phase = "navigate-skills";
+    await navigateToSuffix(window.webContents, "/skills");
+    await waitUntil(window.webContents, `document.querySelector('openclaw-skills-page')`);
+    const skillsPageState = await window.webContents.executeJavaScript(`(() => {
+      const visible = (element) => element && getComputedStyle(element).display !== 'none' && getComputedStyle(element).visibility !== 'hidden';
+      const selectors = ${JSON.stringify(input.ordinaryUserRestrictedControls)};
+      return {
+        pageVisible: visible(document.querySelector('openclaw-skills-page')),
+        restrictedControls: selectors.flatMap((selector) => Array.from(document.querySelectorAll(selector))).filter(visible).length,
+      };
+    })()`);
+    const nativePages = {
+      agentsPanel: agentsPageState.agentsPanel,
+      agentsRestrictedControls: agentsPageState.restrictedControls,
+      skillsPageVisible: skillsPageState.pageVisible,
+      skillsRestrictedControls: skillsPageState.restrictedControls,
+    };
+
     writeFileSync(input.resultPath, JSON.stringify({
       initial,
       uiContract,
+      nativePages,
       visualBaseline,
       restoredHr,
       blockedImmediately,
@@ -218,6 +294,7 @@ app.whenReady().then(async () => {
       })`);
     } catch {}
     writeFileSync(input.resultPath, JSON.stringify({
+      phase,
       error: error instanceof Error ? error.stack : String(error),
       diagnostic,
     }));

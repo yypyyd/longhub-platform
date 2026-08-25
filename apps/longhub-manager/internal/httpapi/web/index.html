@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>LongHub Manager</title>
+  <style>
+    :root { color-scheme: light; font: 15px/1.5 system-ui, sans-serif; background:#f4f6f8; color:#16202a; }
+    body { max-width: 920px; margin: 0 auto; padding: 32px 18px 48px; }
+    h1 { margin:0 0 8px; font-size:28px; } h2 { margin:26px 0 8px; font-size:19px; }
+    .muted { color:#607080; } .row { display:flex; flex-wrap:wrap; gap:10px; align-items:center; }
+    .card { background:#fff; border:1px solid #dbe2e8; border-radius:8px; padding:18px; margin-top:16px; }
+    button { border:0; border-radius:6px; padding:9px 14px; color:#fff; background:#1769aa; cursor:pointer; }
+    button.secondary { background:#52616f; } button.danger { background:#b42318; }
+    pre { white-space:pre-wrap; word-break:break-word; background:#f7f9fb; padding:12px; border-radius:6px; }
+    .error { color:#b42318; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>LongHub Manager</h1>
+    <p class="muted">免费本地 OpenClaw 管理：运行时、Gateway、配置备份与 Manager 更新。</p>
+  </header>
+  <section class="card">
+    <h2>OpenClaw 运行时</h2>
+    <div class="row">
+      <button data-action="status">刷新状态</button>
+      <button data-action="health" class="secondary">健康检查</button>
+      <button data-action="start">启动 Gateway</button>
+      <button data-action="stop" class="danger">停止 Gateway</button>
+      <button data-action="restart" class="danger">重启 Gateway</button>
+    </div>
+    <pre id="runtime" aria-live="polite">正在读取状态…</pre>
+  </section>
+  <section class="card">
+    <h2>配置备份</h2>
+    <div class="row">
+      <button id="backup">创建备份</button>
+      <button id="backups" class="secondary">刷新备份列表</button>
+    </div>
+    <pre id="backup-output" aria-live="polite"></pre>
+  </section>
+  <section class="card">
+    <h2>Manager 更新</h2>
+    <div class="row">
+      <button id="update-status">检查更新</button>
+      <button id="update-download" class="secondary">下载更新</button>
+      <button id="update-apply" class="danger">安装更新</button>
+    </div>
+    <pre id="update-output" aria-live="polite"></pre>
+  </section>
+  <script>
+    const token = location.hash.startsWith('#token=') ? decodeURIComponent(location.hash.slice(7)) : '';
+    const headers = { authorization: 'Bearer ' + token, accept: 'application/json' };
+    async function call(path, options = {}) {
+      const response = await fetch(path, { ...options, headers: { ...headers, ...(options.headers || {}) } });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.code || 'HTTP ' + response.status);
+      return body;
+    }
+    function show(id, value, error = false) {
+      const node = document.getElementById(id);
+      node.textContent = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+      node.className = error ? 'error' : '';
+    }
+    async function runtime(action) {
+      try {
+        const confirm = ['start', 'stop', 'restart'].includes(action);
+        show('runtime', await call('/api/v1/runtime/control', { method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify({ action, confirm }) }));
+      } catch (error) { show('runtime', error.message, true); }
+    }
+    document.querySelectorAll('[data-action]').forEach((button) => button.addEventListener('click', () => runtime(button.dataset.action)));
+    document.getElementById('backup').addEventListener('click', async () => {
+      try { show('backup-output', await call('/api/v1/config/backups', { method:'POST', headers:{'content-type':'application/json'}, body:'{}' })); }
+      catch (error) { show('backup-output', error.message, true); }
+    });
+    document.getElementById('backups').addEventListener('click', async () => {
+      try { show('backup-output', await call('/api/v1/config/backups')); }
+      catch (error) { show('backup-output', error.message, true); }
+    });
+    async function update(action) {
+      try {
+        const options = action ? { method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify({ action, confirm:true }) } : {};
+        show('update-output', await call('/api/v1/manager-update', options));
+      } catch (error) { show('update-output', error.message, true); }
+    }
+    document.getElementById('update-status').addEventListener('click', () => update(''));
+    document.getElementById('update-download').addEventListener('click', () => update('download'));
+    document.getElementById('update-apply').addEventListener('click', () => update('apply'));
+    runtime('status');
+  </script>
+</body>
+</html>
