@@ -70,8 +70,7 @@ switch (tier) {
     managerGoTest({ required: false });
     break;
   case "smoke":
-    run(["--filter", "longhub-portal", "build"]);
-    run(["--filter", "longhub-admin-web", "build"]);
+    run(["turbo", "run", "build", "--concurrency=50%"]);
     runCloudTests([
       "test/clean-launch.test.ts",
       "test/cloud-skill-adapter-distribution.test.ts",
@@ -84,6 +83,7 @@ switch (tier) {
     managerGoTest({ required: false });
     break;
   case "security":
+    run(["turbo", "run", "build", "--concurrency=50%"]);
     run(["--filter", "@longhub/feature-policy", "test"]);
     run(["--filter", "@longhub/observability", "test"]);
     runCloudTests([
