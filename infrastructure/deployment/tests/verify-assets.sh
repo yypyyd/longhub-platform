@@ -92,16 +92,24 @@ tmpdir=$(mktemp -d)
 trap 'rm -rf -- "${tmpdir}"' EXIT
 openssl req -x509 -nodes -newkey rsa:2048 -days 1 -subj '/CN=longhub.test' \
   -keyout "${tmpdir}/key.pem" -out "${tmpdir}/cert.pem" >/dev/null 2>&1
-mkdir -p "${tmpdir}/releases" "${tmpdir}/www/portal" "${tmpdir}/www/admin"
+mkdir -p \
+  "${tmpdir}/releases" \
+  "${tmpdir}/cloud-plugin-releases" \
+  "${tmpdir}/cloud-cli-releases" \
+  "${tmpdir}/www/portal" \
+  "${tmpdir}/www/admin"
 
 export LONGHUB_SERVER_NAME=longhub.test
 export LONGHUB_TLS_CERTIFICATE=${tmpdir}/cert.pem
 export LONGHUB_TLS_CERTIFICATE_KEY=${tmpdir}/key.pem
 export LONGHUB_CLIENT_RELEASE_DIR=${tmpdir}/releases
+export LONGHUB_CLOUD_PLUGIN_RELEASE_DIR=${tmpdir}/cloud-plugin-releases
+export LONGHUB_CLOUD_CLI_RELEASE_DIR=${tmpdir}/cloud-cli-releases
 export LONGHUB_CLOUD_API_UPSTREAM=127.0.0.1:8081
 export LONGHUB_WEB_ROOT=${tmpdir}/www
 substitutions='${LONGHUB_SERVER_NAME} ${LONGHUB_TLS_CERTIFICATE} ${LONGHUB_TLS_CERTIFICATE_KEY} '
-substitutions+='${LONGHUB_CLIENT_RELEASE_DIR} ${LONGHUB_CLOUD_API_UPSTREAM} ${LONGHUB_WEB_ROOT}'
+substitutions+='${LONGHUB_CLIENT_RELEASE_DIR} ${LONGHUB_CLOUD_PLUGIN_RELEASE_DIR} '
+substitutions+='${LONGHUB_CLOUD_CLI_RELEASE_DIR} ${LONGHUB_CLOUD_API_UPSTREAM} ${LONGHUB_WEB_ROOT}'
 envsubst "${substitutions}" \
   < "${template}" > "${tmpdir}/site.conf"
 ! grep -q '\${LONGHUB_' "${tmpdir}/site.conf"

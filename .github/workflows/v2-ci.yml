@@ -83,6 +83,8 @@ jobs:
           node-version: 22.22.3
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Build workspace dependencies
+        run: pnpm build
       - name: Apply clean-launch baseline
         env:
           DATABASE_URL: ${{ env.LONGHUB_TEST_DATABASE_URL }}

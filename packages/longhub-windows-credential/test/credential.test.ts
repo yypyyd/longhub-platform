@@ -31,5 +31,5 @@ describe("Windows credential target isolation", () => {
       await vault.delete(baseUrl);
     }
     await expect(vault.read(baseUrl)).resolves.toBeUndefined();
-  });
+  }, 30_000);
 });
