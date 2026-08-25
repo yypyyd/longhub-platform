@@ -45,10 +45,14 @@ grep -q 'infrastructure/deployment/scripts/runtime-probe.mjs' \
 ! grep -q '^KNOWLEDGE_DATA_KEY=' "${deployment}/env/cloud-api.env.example"
 ! grep -Eq '^(CLIENT_UPDATE|SKILL)_SIGNING_(PRIVATE|PUBLIC)_KEY_PEM=' \
   "${deployment}/env/cloud-api.env.example"
-[[ $(grep -c '^LoadCredential=' "${deployment}/systemd/longhub-cloud-api.service") == 4 ]]
+[[ $(grep -c '^LoadCredential=' "${deployment}/systemd/longhub-cloud-api.service") == 8 ]]
 grep -Fq 'LoadCredential=client-update-private.pem:/etc/longhub/keys/client-update-private.pem' \
   "${deployment}/systemd/longhub-cloud-api.service"
 grep -Fq 'LoadCredential=cloud-skill-private.pem:/etc/longhub/keys/cloud-skill-private.pem' \
+  "${deployment}/systemd/longhub-cloud-api.service"
+grep -Fq 'LoadCredential=cloud-plugin-private.pem:/etc/longhub/keys/cloud-plugin-private.pem' \
+  "${deployment}/systemd/longhub-cloud-api.service"
+grep -Fq 'LoadCredential=cloud-cli-private.pem:/etc/longhub/keys/cloud-cli-private.pem' \
   "${deployment}/systemd/longhub-cloud-api.service"
 grep -Fq 'InaccessiblePaths=/etc/longhub/keys /etc/longhub/tls' \
   "${deployment}/systemd/longhub-cloud-api.service"

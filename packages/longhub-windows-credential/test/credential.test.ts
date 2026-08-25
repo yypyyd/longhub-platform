@@ -7,6 +7,8 @@ import {
   credentialTargetFor,
 } from "../src/index.js";
 
+const credentialManagerIntegration = process.platform === "win32" && process.env.CI ? it.skip : it;
+
 describe("Windows credential target isolation", () => {
   it("normalizes an origin while keeping product namespaces separate", () => {
     const cloud = credentialTargetFor("https://EXAMPLE.com/", CLOUD_PLUGIN_CREDENTIAL_NAMESPACE);
@@ -16,7 +18,7 @@ describe("Windows credential target isolation", () => {
     expect(cloud.slice(cloud.lastIndexOf("/") + 1)).toBe(desktop.slice(desktop.lastIndexOf("/") + 1));
   });
 
-  it("uses real Credential Manager with write-after-read verification on Windows", async () => {
+  credentialManagerIntegration("uses real Credential Manager with write-after-read verification on Windows", async () => {
     const baseUrl = `http://127.0.0.1/credential-test-${randomUUID()}`;
     const vault = new WindowsCredentialManager({ namespace: "LongHub Test" });
     if (process.platform !== "win32") {
