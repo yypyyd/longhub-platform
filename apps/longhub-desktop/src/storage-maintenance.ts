@@ -18,6 +18,8 @@ const ROLLBACK_ENTRY = [
   "openclaw",
   "packs",
   "agent-registry\\.json",
+  "skill-registry\\.json",
+  "skill-registry\\.json\\.bak",
   "trusted-keys\\.json",
   "device\\.json",
   "client-update-state\\.json",
@@ -27,15 +29,18 @@ const ROOT_ROLLBACK_TEMP = new RegExp(
   "i",
 );
 const SNAPSHOT_TEMP = new RegExp(`^\\d+-${VERSION}-${UUID}\\.tmp$`, "i");
-const DOWNLOAD_TEMP = new RegExp(`^\\.LongHub-Setup-${VERSION}\\.exe\\.${UUID}\\.download$`, "i");
-const COMPLETED_INSTALLER = new RegExp(`^LongHub-Setup-${VERSION}\\.exe$`, "i");
+const DOWNLOAD_TEMP = new RegExp(`^\\.LongHub-Manager-Setup-${VERSION}\\.exe\\.${UUID}\\.download$`, "i");
+const COMPLETED_INSTALLER = new RegExp(`^LongHub-Manager-Setup-${VERSION}\\.exe$`, "i");
 const VERSION_DIRECTORY = new RegExp(`^${VERSION}$`);
 const UUID_ATOMIC_TEMP = new RegExp(`^\\.${UUID}\\.tmp$`, "i");
 const ROOT_ATOMIC_TEMP = new RegExp(
-  `^(?:agent-registry\\.json|trusted-keys\\.json|openclaw\\.json)\\.tmp$|^device\\.json\\.\\d+\\.${UUID}\\.tmp$`,
+  `^(?:agent-registry\\.json|skill-registry\\.json(?:\\.bak)?|trusted-keys\\.json|openclaw\\.json)\\.tmp$|^device\\.json\\.\\d+\\.${UUID}\\.tmp$`,
   "i",
 );
-const OPENCLAW_ATOMIC_TEMP = new RegExp(`^runtime-config-cache\\.json\\.\\d+\\.${UUID}\\.tmp$`, "i");
+const OPENCLAW_ATOMIC_TEMP = new RegExp(
+  `^(?:runtime-config-cache|feature-policy-cache)\\.json\\.\\d+\\.${UUID}\\.tmp$`,
+  "i",
+);
 const PACK_ID = /^[a-z0-9][a-z0-9._-]{0,127}$/;
 const PACK_TEMP = new RegExp(`^\\.staging-${VERSION}$|^current\\.json\\.tmp$`);
 
@@ -157,6 +162,8 @@ export function measureManagedState(
     "client-updates",
     "logs",
     "agent-registry.json",
+    "skill-registry.json",
+    "skill-registry.json.bak",
     "trusted-keys.json",
     "device.json",
     "client-update-state.json",

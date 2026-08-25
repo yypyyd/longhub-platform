@@ -1,0 +1,156 @@
+# LongHub public entrypoint. Render only the LONGHUB_* placeholders with
+# infrastructure/deployment/scripts/render-nginx.sh; preserve Nginx variables.
+limit_req_zone $binary_remote_addr zone=longhub_feature_policy_ip:10m rate=240r/m;
+limit_req_zone $server_name zone=longhub_feature_policy_global:1m rate=10000r/m;
+limit_req_zone $binary_remote_addr zone=longhub_sensitive_ip:10m rate=12r/m;
+limit_req_zone $server_name zone=longhub_sensitive_global:1m rate=600r/m;
+
+server {
+  listen 80;
+  listen [::]:80;
+  server_name ${LONGHUB_SERVER_NAME};
+  server_tokens off;
+
+  location /.well-known/acme-challenge/ {
+    root /var/www/html;
+  }
+  location / {
+    return 301 https://${LONGHUB_SERVER_NAME}$request_uri;
+  }
+}
+
+server {
+  listen 443 ssl http2;
+  listen [::]:443 ssl http2;
+  server_name ${LONGHUB_SERVER_NAME};
+  server_tokens off;
+
+  ssl_certificate ${LONGHUB_TLS_CERTIFICATE};
+  ssl_certificate_key ${LONGHUB_TLS_CERTIFICATE_KEY};
+  ssl_protocols TLSv1.2 TLSv1.3;
+  ssl_session_tickets off;
+  client_max_body_size 1024m;
+  add_header X-Content-Type-Options "nosniff" always;
+  add_header Referrer-Policy "same-origin" always;
+  add_header Content-Security-Policy "default-src 'self'; base-uri 'none'; connect-src 'self'; font-src 'self'; form-action 'self'; frame-ancestors 'none'; img-src 'self' data:; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'" always;
+  add_header X-Frame-Options "DENY" always;
+
+  location ~ ^/downloads/(LongHub-Manager-Setup-[0-9]+\.[0-9]+\.[0-9]+\.exe)$ {
+    alias ${LONGHUB_CLIENT_RELEASE_DIR}/$1;
+    disable_symlinks on from=${LONGHUB_CLIENT_RELEASE_DIR};
+    limit_except GET HEAD { deny all; }
+    default_type application/octet-stream;
+    add_header Content-Disposition "attachment" always;
+    add_header Cache-Control "public, max-age=31536000, immutable" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    autoindex off;
+  }
+
+  location ~ ^/downloads/cloud-plugin/(longhub-openclaw-cloud-plugin-[0-9]+\.[0-9]+\.[0-9]+\.tgz)$ {
+    alias ${LONGHUB_CLOUD_PLUGIN_RELEASE_DIR}/$1;
+    disable_symlinks on from=${LONGHUB_CLOUD_PLUGIN_RELEASE_DIR};
+    limit_except GET HEAD { deny all; }
+    default_type application/gzip;
+    add_header Content-Disposition "attachment" always;
+    add_header Cache-Control "public, max-age=31536000, immutable" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    autoindex off;
+  }
+
+  location ~ ^/downloads/cloud-cli/(longhub-cloud-cli-[0-9]+\.[0-9]+\.[0-9]+\.tgz)$ {
+    alias ${LONGHUB_CLOUD_CLI_RELEASE_DIR}/$1;
+    disable_symlinks on from=${LONGHUB_CLOUD_CLI_RELEASE_DIR};
+    limit_except GET HEAD { deny all; }
+    default_type application/gzip;
+    add_header Content-Disposition "attachment" always;
+    add_header Cache-Control "public, max-age=31536000, immutable" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    autoindex off;
+  }
+
+  location /downloads/ {
+    return 404;
+  }
+
+  location ~ ^/v1/(?:auth/(?:login|register)|admin/auth/login|devices/register|devices/pairing/challenge|me/devices/pair)$ {
+    client_max_body_size 64k;
+    limit_req zone=longhub_sensitive_ip burst=8 nodelay;
+    limit_req zone=longhub_sensitive_global burst=100 nodelay;
+    limit_req_status 429;
+    error_page 429 = @sensitive_rate_limited;
+
+    proxy_pass http://${LONGHUB_CLOUD_API_UPSTREAM};
+    proxy_http_version 1.1;
+    proxy_set_header Host ${LONGHUB_SERVER_NAME};
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header X-Request-Id $request_id;
+    proxy_request_buffering off;
+    proxy_buffering off;
+    proxy_read_timeout 30s;
+    proxy_send_timeout 30s;
+  }
+
+  location @sensitive_rate_limited {
+    default_type application/json;
+    add_header Retry-After 5 always;
+    add_header X-Request-Id $request_id always;
+    return 429 '{"code":"SENSITIVE_EDGE_RATE_LIMITED","message":"请求过于频繁，请稍后重试","request_id":"$request_id","retryable":true}';
+  }
+
+  location = /v1/client/feature-policy {
+    client_max_body_size 64k;
+    limit_req zone=longhub_feature_policy_ip burst=120 nodelay;
+    limit_req zone=longhub_feature_policy_global burst=1000 nodelay;
+    limit_req_status 429;
+    error_page 429 = @feature_policy_rate_limited;
+
+    proxy_pass http://${LONGHUB_CLOUD_API_UPSTREAM};
+    proxy_http_version 1.1;
+    proxy_set_header Host ${LONGHUB_SERVER_NAME};
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header X-Request-Id $request_id;
+    proxy_request_buffering off;
+    proxy_buffering off;
+    proxy_read_timeout 30s;
+    proxy_send_timeout 30s;
+  }
+
+  location @feature_policy_rate_limited {
+    default_type application/json;
+    add_header Retry-After 5 always;
+    add_header X-Request-Id $request_id always;
+    return 429 '{"code":"FEATURE_POLICY_EDGE_RATE_LIMITED","message":"策略请求过于频繁，请稍后重试","request_id":"$request_id","retryable":true}';
+  }
+
+  location /v1/ {
+    proxy_pass http://${LONGHUB_CLOUD_API_UPSTREAM};
+    proxy_http_version 1.1;
+    proxy_set_header Host ${LONGHUB_SERVER_NAME};
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header X-Request-Id $request_id;
+    proxy_request_buffering off;
+    proxy_buffering off;
+    proxy_read_timeout 600s;
+    proxy_send_timeout 600s;
+  }
+
+  location = /admin {
+    return 308 /admin/;
+  }
+
+  location /admin/ {
+    root ${LONGHUB_WEB_ROOT};
+    try_files $uri $uri/ /admin/index.html;
+  }
+
+  location / {
+    root ${LONGHUB_WEB_ROOT}/portal;
+    try_files $uri $uri/ /index.html;
+  }
+}

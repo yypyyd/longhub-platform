@@ -8,6 +8,9 @@ import type { LongHubBridgeClient } from "./client.js";
 import {
   LONGHUB_RESUME_SCREEN_SKILL,
   LONGHUB_RESUME_SCREEN_TOOL,
+  LONGHUB_OFFER_LETTER_SKILL,
+  LONGHUB_OFFER_LETTER_TOOL,
+  parseOfferLetterInput,
   parseResumeScreenInput,
   parseTrustedToolContext,
 } from "./protocol.js";
@@ -24,6 +27,16 @@ export const resumeScreenParameters = Type.Object(
       maxLength: 200_000,
       description: "候选人简历全文。",
     }),
+  },
+  { additionalProperties: false },
+);
+
+export const offerLetterParameters = Type.Object(
+  {
+    candidateName: Type.String({ minLength: 1, maxLength: 128, description: "候选人姓名。" }),
+    position: Type.String({ minLength: 1, maxLength: 128, description: "录用岗位。" }),
+    monthlySalaryCny: Type.Integer({ minimum: 1, maximum: 10_000_000, description: "人民币月薪。" }),
+    startDate: Type.String({ pattern: "^\\d{4}-\\d{2}-\\d{2}$", description: "入职日期 YYYY-MM-DD。" }),
   },
   { additionalProperties: false },
 );
@@ -58,6 +71,38 @@ export function createLongHubToolFactory(
         const input = parseResumeScreenInput(rawParams);
         const result = await client.execute({
           skillId: LONGHUB_RESUME_SCREEN_SKILL,
+          input,
+          context: parseTrustedToolContext({ ...trustedContext, toolCallId }),
+        });
+        return {
+          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+          details: result,
+        };
+      },
+    };
+  };
+}
+
+export function createOfferLetterToolFactory(
+  client: LongHubBridgeClient | undefined,
+): OpenClawPluginToolFactory {
+  return (runtimeContext): AnyAgentTool | null => {
+    if (!client) return null;
+    let trustedContext;
+    try {
+      trustedContext = trustedContextFromOpenClaw(runtimeContext);
+    } catch {
+      return null;
+    }
+    return {
+      name: LONGHUB_OFFER_LETTER_TOOL,
+      label: "生成录用通知书",
+      description: "根据候选人、岗位、薪资和入职日期生成录用通知；执行前必须由用户确认。",
+      parameters: offerLetterParameters,
+      async execute(toolCallId, rawParams) {
+        const input = parseOfferLetterInput(rawParams);
+        const result = await client.execute({
+          skillId: LONGHUB_OFFER_LETTER_SKILL,
           input,
           context: parseTrustedToolContext({ ...trustedContext, toolCallId }),
         });

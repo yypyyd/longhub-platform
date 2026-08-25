@@ -1,0 +1,53 @@
+[Unit]
+Description=LongHub clean-launch Cloud API
+Requires=longhub-migrate.service longhub-executor.service
+After=longhub-migrate.service longhub-executor.service network.target
+
+[Service]
+Type=simple
+User=longhub-api
+Group=longhub-api
+SupplementaryGroups=longhub-runtime
+WorkingDirectory=/opt/longhub/current
+EnvironmentFile=/etc/longhub/cloud-api.env
+Environment=PATH=/opt/longhub/node-v22.22.3-linux-x64/bin:/usr/bin:/bin
+LoadCredential=client-update-private.pem:/etc/longhub/keys/client-update-private.pem
+LoadCredential=client-update-public.pem:/etc/longhub/keys/client-update-public.pem
+LoadCredential=cloud-skill-private.pem:/etc/longhub/keys/cloud-skill-private.pem
+LoadCredential=cloud-skill-public.pem:/etc/longhub/keys/cloud-skill-public.pem
+LoadCredential=cloud-plugin-private.pem:/etc/longhub/keys/cloud-plugin-private.pem
+LoadCredential=cloud-plugin-public.pem:/etc/longhub/keys/cloud-plugin-public.pem
+LoadCredential=cloud-cli-private.pem:/etc/longhub/keys/cloud-cli-private.pem
+LoadCredential=cloud-cli-public.pem:/etc/longhub/keys/cloud-cli-public.pem
+ExecStartPre=/bin/bash infrastructure/deployment/scripts/migration-release-gate.sh check
+ExecStart=/bin/bash infrastructure/deployment/scripts/migration-release-gate.sh exec-api
+Restart=on-failure
+RestartSec=3s
+UMask=0027
+NoNewPrivileges=true
+LockPersonality=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHome=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/longhub/client-releases /var/lib/longhub/cloud-plugin-releases /var/lib/longhub/cloud-cli-releases
+InaccessiblePaths=/opt/longhub/current/apps/longhub-executor/src/private-skills
+InaccessiblePaths=/opt/longhub/current/apps/longhub-executor/dist/private-skills
+InaccessiblePaths=/etc/longhub/keys /etc/longhub/tls
+ProtectProc=invisible
+ProcSubset=pid
+RemoveIPC=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictRealtime=true
+RestrictSUIDSGID=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

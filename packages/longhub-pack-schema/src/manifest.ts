@@ -18,7 +18,7 @@ export const packManifestSchema = z.object({
   pack: z.object({
     id: packIdSchema,
     version: semverSchema,
-    minDesktopVersion: semverSchema,
+    minManagerVersion: semverSchema,
   }),
   agentTemplate: z.object({
     id: packIdSchema,

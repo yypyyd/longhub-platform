@@ -41,7 +41,7 @@ function buildSignedPack(version: string, inputFiles: Record<string, string>): P
     memory: { mode: "isolated" },
     lifecycle: { defaultSessionTitle: "HR 新会话", entitlementExpiryPolicy: "readonly" },
     compatibility: {
-      minDesktopVersion: "1.0.0",
+      minManagerVersion: "1.0.0",
       openclawVersion: "2026.7.1-2",
       profileMigrationVersion: 1,
     },
@@ -53,7 +53,7 @@ function buildSignedPack(version: string, inputFiles: Record<string, string>): P
   };
   const manifest: PackManifest = {
     schemaVersion: "longhub/v1",
-    pack: { id: "longhub.hr-suite", version, minDesktopVersion: "1.0.0" },
+    pack: { id: "longhub.hr-suite", version, minManagerVersion: "1.0.0" },
     agentTemplate: { id: "longhub.agent.hr", version: "1.0.0", profilePath: "agent-profile.json" },
     capabilities: [
       { id: "longhub.capability.recruitment", version: "1.0.0", required: true, permissions: [] },

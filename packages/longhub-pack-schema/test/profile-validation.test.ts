@@ -36,7 +36,7 @@ const profile: AgentProfile = {
   memory: { mode: "isolated" },
   lifecycle: { defaultSessionTitle: "HR 新会话", entitlementExpiryPolicy: "readonly" },
   compatibility: {
-    minDesktopVersion: "1.0.0",
+    minManagerVersion: "1.0.0",
     openclawVersion: "2026.7.1-2",
     profileMigrationVersion: 1,
   },
@@ -45,7 +45,7 @@ const profile: AgentProfile = {
 
 const manifest: PackManifest = {
   schemaVersion: "longhub/v1",
-  pack: { id: "longhub.hr-suite", version: "1.0.0", minDesktopVersion: "1.0.0" },
+  pack: { id: "longhub.hr-suite", version: "1.0.0", minManagerVersion: "1.0.0" },
   agentTemplate: {
     id: "longhub.agent.hr",
     version: "1.0.0",

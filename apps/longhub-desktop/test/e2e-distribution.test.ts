@@ -19,6 +19,8 @@ import { PackInstaller } from "../src/pack-installer.js";
 import { activateCloudDevice } from "./helpers/activate-cloud-device.js";
 
 const ADMIN_TOKEN = "e2e-admin";
+/** Retired Pack distribution E2E; excluded from the clean-launch default suite. */
+const RUN_LEGACY_SURFACE_TESTS = process.env.LONGHUB_RUN_LEGACY_SURFACE_TESTS === "true";
 const workDir = mkdtempSync(join(tmpdir(), "lh-e2e-"));
 const corePath = fileURLToPath(new URL("../dist/core-process.js", import.meta.url));
 
@@ -27,7 +29,14 @@ let baseUrl: string;
 let app: DesktopApp;
 
 beforeAll(async () => {
-  api = createCloudApiServer({ executorUrl: "http://127.0.0.1:1", adminToken: ADMIN_TOKEN }).listen(0);
+  if (!RUN_LEGACY_SURFACE_TESTS) return;
+  // Historical Pack/activation regression only. Clean-launch production keeps
+  // these routes unavailable unless a test explicitly opts in.
+  api = createCloudApiServer({
+    executorUrl: "http://127.0.0.1:1",
+    adminToken: ADMIN_TOKEN,
+    legacySurfaceEnabled: true,
+  }).listen(0);
   await once(api, "listening");
   baseUrl = `http://127.0.0.1:${(api.address() as AddressInfo).port}`;
   app = new DesktopApp(new CoreClient({ corePath }), new PackInstaller(join(workDir, "packs")), {
@@ -37,8 +46,10 @@ beforeAll(async () => {
 });
 
 afterAll(() => {
-  app.stop();
-  api.close();
+  if (RUN_LEGACY_SURFACE_TESTS) {
+    app.stop();
+    api.close();
+  }
   rmSync(workDir, { recursive: true, force: true });
 });
 
@@ -51,7 +62,9 @@ async function waitForTerminal(taskId: string): Promise<{ status: string; output
   throw new Error("任务超时未到终态");
 }
 
-describe("发布→授权→安装→执行 全链路", () => {
+describe.skipIf(!RUN_LEGACY_SURFACE_TESTS)(
+  "历史 Pack 回归：发布→授权→安装→执行 全链路（仅显式 LONGHUB_RUN_LEGACY_SURFACE_TESTS=true）",
+  () => {
   let deviceId: string;
   let deviceToken: string;
 
@@ -97,4 +110,5 @@ describe("发布→授权→安装→执行 全链路", () => {
     const task = await waitForTerminal(submitted.taskId);
     expect(task.status).toBe("failed");
   }, 20_000);
-});
+  },
+);

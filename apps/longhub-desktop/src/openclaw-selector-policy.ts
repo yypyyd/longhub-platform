@@ -98,17 +98,25 @@ export function openClawSelectorPolicyScript(options: OpenClawSelectorScriptOpti
 
     const selectors = () => Array.from(document.querySelectorAll(selectorQuery));
     const remember = (select) => previousValues.set(select, select.value || "main");
+    const isVisible = (element) => {
+      if (!element) return false;
+      const style = getComputedStyle(element);
+      return style.display !== "none" && style.visibility !== "hidden" && element.getClientRects().length > 0;
+    };
     const findSelectorHost = () => Array.from(document.querySelectorAll("*")).find(
       (element) => typeof element[selectAgentMethod] === "function",
     );
     const createSelector = () => {
-      if (allowed.size + installableAgents.length <= 1 || selectors().length > 0) return;
+      const currentSelectors = selectors();
+      const nativeSelector = currentSelectors.find((select) => select.dataset.longhubInjected !== "true");
+      if (currentSelectors.some((select) => select.dataset.longhubInjected === "true") || isVisible(nativeSelector)) return;
       const host = findSelectorHost();
       const mount = selectorMountQueries.map((query) => document.querySelector(query)).find(Boolean);
       if (!host || !mount) return;
       const label = document.createElement("label");
       label.className = "sidebar-agent-scope longhub-agent-scope";
       label.dataset.longhubInjected = "true";
+      label.setAttribute("aria-label", "当前智能体");
       const select = document.createElement("select");
       select.dataset.chatAgentFilter = "true";
       select.dataset.longhubInjected = "true";
@@ -195,7 +203,7 @@ export function openClawSelectorPolicyScript(options: OpenClawSelectorScriptOpti
       try {
         createSelector();
         const nativeSelector = document.querySelector(selectorQuery + ":not([data-longhub-injected='true'])");
-        if (nativeSelector) document.querySelector("label[data-longhub-injected='true']")?.remove();
+        if (isVisible(nativeSelector)) document.querySelector("label[data-longhub-injected='true']")?.remove();
         for (const select of selectors()) {
           for (const option of Array.from(select.options)) {
             if (!option.dataset.longhubInstallPack && !allowed.has(String(option.value).toLowerCase())) option.remove();
@@ -210,7 +218,13 @@ export function openClawSelectorPolicyScript(options: OpenClawSelectorScriptOpti
           }
           select.dataset.longhubSelectorPolicy = "v1";
           const label = select.closest("label.sidebar-agent-scope");
-          if (label) label.style.display = allowed.size + installableAgents.length > 1 ? "" : "none";
+          if (label) {
+            label.style.display = "";
+            label.dataset.longhubSingleAgent = allowed.size + installableAgents.length === 1 ? "true" : "false";
+            label.title = allowed.size + installableAgents.length === 1
+              ? "当前智能体；可从智能体中心添加更多"
+              : "切换智能体";
+          }
         }
       } finally {
         applying = false;
@@ -335,11 +349,22 @@ export function openClawSelectorPolicyScript(options: OpenClawSelectorScriptOpti
         stopTimeoutMs = next.stopTimeoutMs;
         applyAllowed();
       },
+      select(agentId) {
+        const targetAgentId = String(agentId || "").toLowerCase();
+        if (!allowed.has(targetAgentId)) return false;
+        applyAllowed();
+        const select = document.querySelector(selectorQuery);
+        if (!select) return false;
+        select.value = targetAgentId;
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+        return true;
+      },
       snapshot() {
         return {
           allowedAgentIds: Array.from(allowed).sort(),
           installablePackIds: installableAgents.map((agent) => agent.packId),
           selectorCount: selectors().length,
+          currentAgentId: document.querySelector(selectorQuery)?.value || "main",
         };
       },
     };
@@ -354,6 +379,22 @@ export async function installOpenClawSelectorPolicy(
   options: OpenClawSelectorScriptOptions,
 ): Promise<void> {
   await webContents.executeJavaScript(openClawSelectorPolicyScript(options));
+}
+
+/** 通过已安装的页面策略触发真实 OpenClaw Selector；不会给主 WebUI 增加 IPC。 */
+export async function selectOpenClawAgent(
+  webContents: OpenClawWebContents,
+  agentId: string,
+): Promise<boolean> {
+  const normalized = agentId.trim().toLowerCase();
+  if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(normalized)) return false;
+  const result = await webContents.executeJavaScript(`(() => {
+    const policy = window[${JSON.stringify(POLICY_KEY)}];
+    return policy && typeof policy.select === "function"
+      ? policy.select(${JSON.stringify(normalized)})
+      : false;
+  })()`);
+  return result === true;
 }
 
 export const OPENCLAW_SELECTOR_CONTRACT = {

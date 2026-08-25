@@ -40,7 +40,7 @@ async function createCode(options: { maxUses?: number; packIds?: string[] } = {}
 }
 
 beforeEach(async () => {
-  server = createCloudApiServer({ executorUrl: "http://127.0.0.1:1", adminToken: ADMIN_TOKEN });
+  server = createCloudApiServer({ executorUrl: "http://127.0.0.1:1", adminToken: ADMIN_TOKEN, legacySurfaceEnabled: true });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 });

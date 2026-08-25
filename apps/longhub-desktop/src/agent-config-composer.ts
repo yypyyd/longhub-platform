@@ -20,6 +20,7 @@ export interface EnabledAgentProfile {
 export interface AgentConfigComposerOptions {
   stateDir: string;
   mainWorkspaceDir: string;
+  mainAvatarDataUrl?: string;
   desktopVersion: string;
   openclawVersion: string;
   modelPolicies: Readonly<Record<string, string>>;
@@ -76,6 +77,13 @@ function assertComposerOptions(options: AgentConfigComposerOptions): void {
   if (options.toolBridgePluginPath && !isAbsolute(options.toolBridgePluginPath)) {
     throw new Error("LongHub Tool Bridge 插件路径必须是绝对路径");
   }
+  if (
+    options.mainAvatarDataUrl
+    && (!/^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(options.mainAvatarDataUrl)
+      || options.mainAvatarDataUrl.length > 3 * 1024 * 1024)
+  ) {
+    throw new Error("龙枢主头像必须是有界 PNG data URI");
+  }
 }
 
 function composeProfileAgent(
@@ -99,7 +107,7 @@ function composeProfileAgent(
   if (!OPENCLAW_AGENT_ID.test(registry.agentId) || registry.agentId === "main") {
     throw new Error(`Registry agentId 无效: ${registry.agentId}`);
   }
-  if (!semverGte(options.desktopVersion, profile.compatibility.minDesktopVersion)) {
+  if (!semverGte(options.desktopVersion, profile.compatibility.minManagerVersion)) {
     throw new Error(`Profile ${profile.id} 与当前 Desktop 不兼容`);
   }
   if (profile.compatibility.openclawVersion !== options.openclawVersion) {
@@ -149,7 +157,11 @@ export function composeOpenClawAgentConfig(
     workspace: options.mainWorkspaceDir,
     agentDir: join(options.stateDir, "agents", "main", "agent"),
     model: { primary: defaultModel },
-    identity: { name: "龙枢助手", emoji: "🐉", avatar: "avatars/longhub.png" },
+    identity: {
+      name: "龙枢助手",
+      emoji: "🐉",
+      avatar: options.mainAvatarDataUrl ?? "avatars/longhub.png",
+    },
     memorySearch: { enabled: true, sources: ["memory"] },
     subagents: { allowAgents: [], requireAgentId: true },
     tools: toolsFor(),

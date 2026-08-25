@@ -13,11 +13,15 @@
   },
   "contracts": {
     "tools": [
-      "longhub_resume_screen"
+      "longhub_resume_screen",
+      "longhub_offer_letter"
     ]
   },
   "toolMetadata": {
     "longhub_resume_screen": {
+      "optional": true
+    },
+    "longhub_offer_letter": {
       "optional": true
     }
   }

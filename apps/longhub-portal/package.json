@@ -2,9 +2,10 @@
   "name": "longhub-portal",
   "version": "0.1.0",
   "private": true,
-  "description": "龙枢官网：产品展示 / 定价 / 注册登录 / 个人中心 / 购买充值",
+  "description": "龙枢门户：免费原生 OpenClaw 管家 / 云端 Skill 目录 / 账号订阅",
   "type": "module",
   "scripts": {
+    "dev": "vite",
     "build": "tsc -p tsconfig.json --noEmit && vite build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "tsc -p tsconfig.json --noEmit"

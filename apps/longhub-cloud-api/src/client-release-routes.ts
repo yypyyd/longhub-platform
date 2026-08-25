@@ -19,6 +19,7 @@ import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import {
+  CLIENT_UPDATE_PRODUCT_SURFACE,
   CLIENT_UPDATE_SCHEMA,
   compareClientVersions,
   signClientUpdateManifest,
@@ -71,6 +72,8 @@ function loadReleases(ctx: ClientReleaseContext): ClientReleaseRecord[] {
       !("manifest" in item) ||
       (item as { manifest?: { schema_version?: string; rollout?: unknown } }).manifest?.schema_version !==
         CLIENT_UPDATE_SCHEMA ||
+      (item as { manifest?: { product_surface?: unknown } }).manifest?.product_surface !==
+        CLIENT_UPDATE_PRODUCT_SURFACE ||
       !(item as { manifest?: { rollout?: unknown } }).manifest?.rollout ||
       (item as { manifest?: { rollback_data_strategy?: unknown } }).manifest?.rollback_data_strategy === undefined
     ) {
@@ -162,7 +165,7 @@ export async function handleClientReleaseRoutes(
   res: ServerResponse,
   url: URL,
 ): Promise<boolean> {
-  // 公开：签名公钥只用于运维核对/轮换发现；Desktop 的信任锚必须随应用预置，不能信任本接口自举。
+  // 公开：签名公钥只用于运维核对/轮换发现；Manager 的信任锚必须随应用预置，不能信任本接口自举。
   if (req.method === "GET" && url.pathname === "/v1/client-releases/signing-key") {
     sendJson(res, 200, {
       purpose: "longhub-client-update-v2",
@@ -184,7 +187,7 @@ export async function handleClientReleaseRoutes(
     return true;
   }
 
-  // 公开：按精确版本返回可信元数据，供 Desktop 在升级前准备当前版本的回滚安装器。
+  // 公开：按精确版本返回可信元数据，供 Manager 在升级前准备当前版本的回滚安装器。
   // 此接口不执行 rollout 判断，也不会把历史版本伪装成“最新版本”。
   const exactVersionMatch = /^\/v1\/client-releases\/versions\/([^/]+)$/.exec(url.pathname);
   if (req.method === "GET" && exactVersionMatch) {
@@ -309,8 +312,8 @@ export async function handleClientReleaseRoutes(
       sendError(res, 422, "VALIDATION_FAILED", "version 需为 x.y.z 形式");
       return true;
     }
-    if (rawName !== filename || filename !== `LongHub-Setup-${version}.exe`) {
-      sendError(res, 422, "VALIDATION_FAILED", "filename 必须与版本匹配：LongHub-Setup-x.y.z.exe");
+    if (rawName !== filename || filename !== `LongHub-Manager-Setup-${version}.exe`) {
+      sendError(res, 422, "VALIDATION_FAILED", "filename 必须与版本匹配：LongHub-Manager-Setup-x.y.z.exe");
       return true;
     }
     if (!validChannel(channelValue)) {
@@ -394,6 +397,7 @@ export async function handleClientReleaseRoutes(
     const uploadedAt = new Date().toISOString();
     const manifest: ClientUpdateManifest = {
       schema_version: CLIENT_UPDATE_SCHEMA,
+      product_surface: CLIENT_UPDATE_PRODUCT_SURFACE,
       sequence: (currentReleases[0]?.manifest.sequence ?? 0) + 1,
       version,
       channel: channelValue,

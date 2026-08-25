@@ -1,5 +1,8 @@
 import type { BridgeExecutionPolicy, CoreBudget } from "@longhub/core";
-import { LONGHUB_BRIDGE_SKILL_PERMISSIONS } from "@longhub/openclaw-bridge";
+import {
+  LONGHUB_BRIDGE_CONFIRMATION_DESCRIPTORS,
+  LONGHUB_BRIDGE_SKILL_PERMISSIONS,
+} from "@longhub/openclaw-bridge";
 import type { EnabledAgentProfile } from "./agent-config-composer.js";
 
 export interface ToolBridgePolicyLimits {
@@ -53,6 +56,15 @@ export function buildToolBridgePolicy(
         tenantPermissions: [...(limits.tenantPermissions ?? PRODUCT_PERMISSION_CEILING)].sort(),
         devicePermissions: [...(limits.devicePermissions ?? PRODUCT_PERMISSION_CEILING)].sort(),
         budget: { ...(limits.budget ?? DEFAULT_BRIDGE_BUDGET) },
+        ...(
+          skillId in LONGHUB_BRIDGE_CONFIRMATION_DESCRIPTORS
+            ? {
+                confirmation: LONGHUB_BRIDGE_CONFIRMATION_DESCRIPTORS[
+                  skillId as keyof typeof LONGHUB_BRIDGE_CONFIRMATION_DESCRIPTORS
+                ],
+              }
+            : {}
+        ),
       }));
   }
   return policy;

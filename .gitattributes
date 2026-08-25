@@ -1,0 +1,6 @@
+/infrastructure/migrations/clean-launch/*.sql text eol=lf
+*.sh text eol=lf
+*.mjs text eol=lf
+*.service text eol=lf
+*.env.example text eol=lf
+*.conf.template text eol=lf

@@ -26,6 +26,7 @@ import { buildOpenClawConfig, initializeOpenClawWorkspace } from "../src/opencla
 import { PackInstaller } from "../src/pack-installer.js";
 
 const root = mkdtempSync(join(tmpdir(), "longhub-selector-e2e-"));
+const VALID_PNG_DATA_URL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl+X8sAAAAASUVORK5CYII=";
 let gateway: ChildProcess | undefined;
 
 async function freePort(): Promise<number> {
@@ -94,6 +95,7 @@ describe("锁定版 OpenClaw 原生 Agent Selector E2E", () => {
       {
         stateDir,
         mainWorkspaceDir: workspaceDir,
+        mainAvatarDataUrl: VALID_PNG_DATA_URL,
         desktopVersion: "0.3.6",
         openclawVersion: BUNDLED_OPENCLAW_VERSION,
         modelPolicies: { "longhub.model.default": "longhub/longhub-default" },
@@ -152,6 +154,59 @@ describe("锁定版 OpenClaw 原生 Agent Selector E2E", () => {
     const listedSessions = await transport.call("sessions.list", {}) as { sessions: Array<{ key: string }> };
     expect(listedSessions.sessions.map((session) => session.key)).toEqual(expect.arrayContaining([older.key, latest.key]));
 
+    await transport.call("sessions.patch", {
+      key: latest.key,
+      agentId: hrAgentId,
+      label: "HR 可搜索会话",
+      category: "longhub-spike",
+      pinned: true,
+    });
+    const searchedSessions = await transport.call("sessions.list", {
+      agentId: hrAgentId,
+      search: "可搜索",
+      limit: 10,
+      offset: 0,
+    }) as { sessions: Array<{ key: string; label?: string }> };
+    expect(searchedSessions.sessions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: latest.key, label: "HR 可搜索会话" }),
+    ]));
+    const described = await transport.call("sessions.describe", {
+      key: latest.key,
+      includeDerivedTitles: true,
+      includeLastMessage: true,
+    });
+    expect(JSON.stringify(described)).toContain(latest.key);
+    const history = await transport.call("chat.history", {
+      sessionKey: latest.key,
+      agentId: hrAgentId,
+      limit: 20,
+      offset: 0,
+      maxChars: 20_000,
+    }) as { messages: unknown[] };
+    expect(history.messages).toEqual([]);
+    await expect(transport.call("sessions.list", {
+      agentId: hrAgentId,
+      unexpected: true,
+    })).rejects.toThrow(/invalid sessions\.list params/i);
+
+    await transport.call("sessions.patch", { key: older.key, agentId: hrAgentId, archived: true });
+    const archivedSessions = await transport.call("sessions.list", {
+      agentId: hrAgentId,
+      archived: true,
+    }) as { sessions: Array<{ key: string }> };
+    expect(archivedSessions.sessions.map((session) => session.key)).toContain(older.key);
+    await transport.call("sessions.delete", {
+      key: older.key,
+      agentId: hrAgentId,
+      archivedOnly: true,
+      deleteTranscript: true,
+    });
+    const afterDelete = await transport.call("sessions.list", {
+      agentId: hrAgentId,
+      archived: true,
+    }) as { sessions: Array<{ key: string }> };
+    expect(afterDelete.sessions.map((session) => session.key)).not.toContain(older.key);
+
     const resultPath = join(root, "selector-result.json");
     const inputPath = join(root, "selector-input.json");
     const controlUiUrl = openClawControlUiUrl(`ws://127.0.0.1:${port}`, { token });
@@ -167,11 +222,15 @@ describe("锁定版 OpenClaw 原生 Agent Selector E2E", () => {
       modelControlSelectors: OPENCLAW_COMPAT_CONTRACT.selectors.modelControls,
       restrictedNavigationSelectors: OPENCLAW_COMPAT_CONTRACT.selectors.restrictedNavigationLinks,
       ordinaryUserHiddenSelectors: OPENCLAW_COMPAT_CONTRACT.selectors.ordinaryUserHidden,
+      ordinaryUserRestrictedControls: OPENCLAW_COMPAT_CONTRACT.selectors.ordinaryUserRestrictedControls,
+      ordinaryUserPathSuffixes: OPENCLAW_COMPAT_CONTRACT.routes.ordinaryUserPathSuffixes,
+      agentsPage: OPENCLAW_COMPAT_CONTRACT.selectors.agentsPage,
+      agentsPanelProperty: OPENCLAW_COMPAT_CONTRACT.selectors.agentsPanelProperty,
       selectAgentMethod: OPENCLAW_COMPAT_CONTRACT.selectors.selectAgentMethod,
       productUiScript: openClawProductUiScript({
         assistant_name: "龙枢助手",
         welcome_message: "你好，我是龙枢助手。",
-        assistant_avatar_data_url: "data:image/png;base64,bG9uZ2h1Yg==",
+        assistant_avatar_data_url: VALID_PNG_DATA_URL,
       }),
       policyScript: openClawSelectorPolicyScript({
         allowedAgentIds: ["main", hrAgentId],
@@ -220,7 +279,18 @@ describe("锁定版 OpenClaw 原生 Agent Selector E2E", () => {
       visibleModelControls: 0,
       visibleRestrictedNavigation: 0,
       visibleOrdinaryUserHidden: 0,
+      officialSidebarVisible: true,
+      officialNativeRoutes: ["activity", "agents", "sessions", "usage", "tasks", "skills"],
+      productEntries: [],
+      visibleRestrictedControls: 0,
+      brokenVisibleImages: 0,
       hasNode: false,
+    });
+    expect(result.nativePages).toEqual({
+      agentsPanel: "overview",
+      agentsRestrictedControls: 0,
+      skillsPageVisible: true,
+      skillsRestrictedControls: 0,
     });
     expect(result.visualBaseline).toMatchObject({
       viewport: { width: 1200, height: 800 },
@@ -243,6 +313,6 @@ describe("锁定版 OpenClaw 原生 Agent Selector E2E", () => {
     expect(result.blockedImmediately).toEqual({ selected: "main", stopClicked: true });
     expect(result.switchedAfterStop.session).toBe(latest.key);
     expect(result.afterRemoval).toMatchObject({ value: "main", session: "agent:main:main" });
-    expect(result.afterRemoval.options.map((option: { value: string }) => option.value)).toEqual([]);
-  }, 180_000);
+    expect(result.afterRemoval.options.map((option: { value: string }) => option.value)).toEqual(["main"]);
+  }, 240_000);
 });

@@ -11,6 +11,8 @@ import { createCloudApiServer } from "longhub-cloud-api";
 import { PackPublisher, type PackSource } from "../src/pack-publisher.js";
 
 const ADMIN_TOKEN = "console-admin";
+/** Retired Pack publisher regression; excluded from the clean-launch default suite. */
+const RUN_LEGACY_SURFACE_TESTS = process.env.LONGHUB_RUN_LEGACY_SURFACE_TESTS === "true";
 
 function buildPackSource(version: string): PackSource {
   const profile = {
@@ -26,7 +28,7 @@ function buildPackSource(version: string): PackSource {
     memory: { mode: "isolated" },
     lifecycle: { defaultSessionTitle: "HR 新会话", entitlementExpiryPolicy: "readonly" },
     compatibility: {
-      minDesktopVersion: "1.0.0",
+      minManagerVersion: "1.0.0",
       openclawVersion: "2026.7.1-2",
       profileMigrationVersion: 1,
     },
@@ -34,7 +36,7 @@ function buildPackSource(version: string): PackSource {
   return {
     manifest: {
       schemaVersion: "longhub/v1",
-      pack: { id: "longhub.hr-suite", version, minDesktopVersion: "1.0.0" },
+      pack: { id: "longhub.hr-suite", version, minManagerVersion: "1.0.0" },
       agentTemplate: { id: "longhub.agent.hr", version: "1.0.0", profilePath: "agent-profile.json" },
       capabilities: [
         { id: "longhub.capability.recruitment", version: "1.0.0", required: true, permissions: [] },
@@ -56,17 +58,27 @@ let publisher: PackPublisher;
 const workDir = mkdtempSync(join(tmpdir(), "lh-console-"));
 
 beforeAll(async () => {
-  api = createCloudApiServer({ executorUrl: "http://127.0.0.1:1", adminToken: ADMIN_TOKEN }).listen(0);
+  if (!RUN_LEGACY_SURFACE_TESTS) return;
+  // PackPublisher is a retained offline/legacy regression fixture.  The
+  // clean-launch server disables this surface by default; opt in explicitly
+  // here so the test does not turn the historical API back on in production.
+  api = createCloudApiServer({
+    executorUrl: "http://127.0.0.1:1",
+    adminToken: ADMIN_TOKEN,
+    legacySurfaceEnabled: true,
+  }).listen(0);
   await once(api, "listening");
   publisher = new PackPublisher(`http://127.0.0.1:${(api.address() as AddressInfo).port}`, ADMIN_TOKEN);
 });
 
 afterAll(() => {
-  api.close();
+  if (RUN_LEGACY_SURFACE_TESTS) api.close();
   rmSync(workDir, { recursive: true, force: true });
 });
 
-describe("PackPublisher 发布与吊销", () => {
+describe.skipIf(!RUN_LEGACY_SURFACE_TESTS)(
+  "历史 PackPublisher 发布与吊销（仅显式 LONGHUB_RUN_LEGACY_SURFACE_TESTS=true）",
+  () => {
   it("上传后由云端签名发布", async () => {
     const result = await publisher.publish(buildPackSource("1.0.0"));
     expect(result.ok).toBe(true);
@@ -104,4 +116,5 @@ describe("PackPublisher 发布与吊销", () => {
     const result = await publisher.revoke("longhub.hr-suite", "9.9.9");
     expect(result).toMatchObject({ ok: false, code: "RELEASE_NOT_FOUND" });
   });
-});
+  },
+);

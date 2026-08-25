@@ -1,9 +1,25 @@
 export const LONGHUB_BRIDGE_PLUGIN_ID = "longhub-tool-bridge";
 export const LONGHUB_RESUME_SCREEN_TOOL = "longhub_resume_screen";
 export const LONGHUB_RESUME_SCREEN_SKILL = "longhub.skill.resume-screen";
+export const LONGHUB_OFFER_LETTER_TOOL = "longhub_offer_letter";
+export const LONGHUB_OFFER_LETTER_SKILL = "longhub.skill.offer-letter";
 export const LONGHUB_BRIDGE_SKILL_PERMISSIONS: Readonly<Record<string, readonly string[]>> = {
   [LONGHUB_RESUME_SCREEN_SKILL]: ["connector:hr-api:read"],
+  [LONGHUB_OFFER_LETTER_SKILL]: ["connector:hr-api:write"],
 };
+export const LONGHUB_BRIDGE_CONFIRMATION_DESCRIPTORS = {
+  [LONGHUB_OFFER_LETTER_SKILL]: {
+    action: "生成录用通知书",
+    object: "候选人录用通知",
+    recipientField: "candidateName",
+    dataFields: [
+      { label: "岗位", field: "position" },
+      { label: "月薪（人民币元）", field: "monthlySalaryCny" },
+      { label: "入职日期", field: "startDate" },
+    ],
+    estimatedCostCents: 0,
+  },
+} as const;
 
 export interface TrustedToolContext {
   agentId: string;
@@ -25,6 +41,13 @@ export type BridgeExecuteResponse =
 export interface ResumeScreenInput {
   requiredKeywords: string[];
   resumeText: string;
+}
+
+export interface OfferLetterInput {
+  candidateName: string;
+  position: string;
+  monthlySalaryCny: number;
+  startDate: string;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -80,5 +103,32 @@ export function parseResumeScreenInput(value: unknown): ResumeScreenInput {
   return {
     requiredKeywords: [...value.requiredKeywords],
     resumeText: nonEmptyString(value.resumeText, "resumeText", 200_000),
+  };
+}
+
+export function parseOfferLetterInput(value: unknown): OfferLetterInput {
+  if (!isRecord(value)) throw new Error("录用通知参数必须是对象");
+  assertExactKeys(
+    value,
+    ["candidateName", "position", "monthlySalaryCny", "startDate"],
+    "录用通知参数",
+  );
+  if (
+    typeof value.monthlySalaryCny !== "number"
+    || !Number.isSafeInteger(value.monthlySalaryCny)
+    || value.monthlySalaryCny < 1
+    || value.monthlySalaryCny > 10_000_000
+  ) {
+    throw new Error("monthlySalaryCny 必须是 1-10000000 的整数");
+  }
+  const startDate = nonEmptyString(value.startDate, "startDate", 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(startDate) || !Number.isFinite(Date.parse(startDate + "T00:00:00.000Z"))) {
+    throw new Error("startDate 必须是有效 YYYY-MM-DD 日期");
+  }
+  return {
+    candidateName: nonEmptyString(value.candidateName, "candidateName", 128),
+    position: nonEmptyString(value.position, "position", 128),
+    monthlySalaryCny: value.monthlySalaryCny,
+    startDate,
   };
 }

@@ -5,3 +5,6 @@ export * from "./profile-validation.js";
 export * from "./validate.js";
 export * from "./integrity.js";
 export * from "./client-update.js";
+export * from "./skill-package.js";
+export * from "./user-content-skill.js";
+export * from "./workflow-dsl.js";

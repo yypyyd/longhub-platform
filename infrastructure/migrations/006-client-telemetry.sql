@@ -2,7 +2,7 @@
 CREATE TABLE IF NOT EXISTS client_telemetry_hourly (
   bucket_start TIMESTAMPTZ NOT NULL,
   event_type TEXT NOT NULL CHECK (event_type IN ('client_started', 'gateway_state', 'client_update_result', 'product_error', 'previous_exit')),
-  desktop_version TEXT NOT NULL,
+  manager_version TEXT NOT NULL,
   openclaw_version TEXT NOT NULL,
   platform TEXT NOT NULL CHECK (platform = 'win32'),
   architecture TEXT NOT NULL CHECK (architecture IN ('x64', 'arm64')),
@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS client_telemetry_hourly (
       AND agent_count_bucket = '-')
   ),
   PRIMARY KEY (
-    bucket_start, event_type, desktop_version, openclaw_version,
+    bucket_start, event_type, manager_version, openclaw_version,
     platform, architecture, value, agent_count_bucket
   )
 );

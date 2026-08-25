@@ -1,13 +1,15 @@
 /* 苹果风后台：侧栏 + 卡片，大留白、圆角、毛玻璃 */
 :root {
-  --bg: #f5f5f7;
+  --bg: #f3f5f8;
   --card: #ffffff;
   --text: #1d1d1f;
   --muted: #6e6e73;
-  --accent: #0071e3;
-  --accent-hover: #0077ed;
+  --accent: #d84b32;
+  --accent-hover: #bd3d28;
+  --accent-soft: rgba(216, 75, 50, 0.09);
   --danger: #ff3b30;
   --ok: #34c759;
+  --line: rgba(29, 29, 31, 0.09);
   --radius: 16px;
 }
 
@@ -86,7 +88,7 @@ input, select, textarea {
   border: 1px solid #d2d2d7; border-radius: 10px; background: #fff; outline: none;
   font-family: inherit;
 }
-input:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(0, 113, 227, 0.15); }
+input:focus, select:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(216, 75, 50, 0.13); }
 textarea { width: 100%; min-height: 150px; resize: vertical; }
 
 .model-form > .muted { margin-bottom: 18px; }
@@ -113,3 +115,55 @@ textarea { width: 100%; min-height: 150px; resize: vertical; }
 .login label { display: block; font-size: 13px; color: var(--muted); margin: 14px 0 6px; }
 .login input { width: 100%; font-size: 15px; padding: 11px 14px; border-radius: 12px; }
 .login .btn { width: 100%; margin-top: 24px; font-size: 15px; padding: 11px; }
+
+/* 运营后台：分组导航、云端 Skill 运营与响应式布局。 */
+.sidebar {
+  width: 248px;
+  padding: 22px 14px 16px;
+  background: rgba(255, 255, 255, 0.88);
+  display: flex;
+  flex-direction: column;
+}
+.sidebar .brand { gap: 11px; padding: 5px 10px 20px; }
+.sidebar .brand img { width: 40px; height: 40px; border-radius: 13px; box-shadow: 0 4px 14px rgba(216, 75, 50, 0.16); }
+.sidebar .brand span { display: flex; flex-direction: column; gap: 2px; }
+.sidebar .brand strong { font-size: 16px; }
+.sidebar .brand small { color: var(--muted); font-size: 11px; font-weight: 500; }
+.sidebar-nav { flex: 1; overflow-y: auto; padding-right: 2px; }
+.nav-group { margin-bottom: 15px; }
+.nav-label { color: #9a9aa0; font-size: 10px; font-weight: 700; letter-spacing: .08em; padding: 0 12px 6px; }
+.sidebar button:hover { background: rgba(0, 0, 0, 0.045); }
+.sidebar button.active { background: var(--accent-soft); color: var(--accent); font-weight: 650; }
+.sidebar-footer { padding-top: 12px; border-top: 1px solid var(--line); }
+.sidebar .who { display: flex; align-items: center; gap: 7px; padding: 8px 12px 6px; overflow: hidden; text-overflow: ellipsis; }
+.main { min-width: 0; padding: 34px 40px 64px; max-width: 1500px; }
+.pill.active, .pill.paid, .pill.listed { background: rgba(52, 199, 89, 0.12); color: #1d8a3e; }
+.status-dot { width: 8px; height: 8px; display: inline-block; border-radius: 50%; background: #aaa; flex: 0 0 auto; }
+.status-dot.active { background: var(--ok); box-shadow: 0 0 0 4px rgba(52,199,89,.12); }
+.page-intro { max-width: 760px; margin: -8px 0 20px; line-height: 1.55; }
+.login-intro { text-align: center; margin: -14px 0 20px; line-height: 1.5; }
+.table-scroll { overflow-x: auto; margin: 0 -4px; padding: 0 4px; }
+.empty-cell { text-align: center; color: var(--muted); padding: 30px; }
+.compact-actions { flex-wrap: nowrap; }
+.compact-actions .btn { white-space: nowrap; padding: 6px 11px; }
+
+.adapter-field-label { display: block; color: var(--muted); font-size: 13px; margin: 18px 0 7px; }
+.adapter-json { min-height: 260px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; line-height: 1.5; }
+.adapter-files { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-top: 16px; }
+.adapter-files label { display: flex; flex-direction: column; gap: 7px; color: var(--muted); font-size: 13px; }
+.adapter-files textarea { min-height: 220px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; line-height: 1.5; }
+
+@media (max-width: 980px) {
+  .sidebar { width: 210px; }
+  .main { padding: 28px 24px 56px; }
+}
+
+@media (max-width: 720px) {
+  .layout { display: block; }
+  .sidebar { position: static; width: 100%; height: auto; }
+  .sidebar-nav { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px 14px; }
+  .main { padding: 22px 16px 48px; }
+  .form-grid { grid-template-columns: 1fr; }
+  .form-grid .span-2 { grid-column: auto; }
+  .adapter-files { grid-template-columns: 1fr; }
+}

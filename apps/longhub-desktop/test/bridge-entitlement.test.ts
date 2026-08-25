@@ -9,6 +9,12 @@ import { CloudPackEligibilitySource } from "../src/pack-eligibility.js";
 import { activateCloudDevice } from "./helpers/activate-cloud-device.js";
 
 const ADMIN_TOKEN = "bridge-entitlement-admin";
+/**
+ * Pack entitlements are not part of the clean-launch Manager product. Keep
+ * this compatibility test available only for an explicitly requested legacy
+ * run so the default suite cannot make the retired surface look supported.
+ */
+const RUN_LEGACY_SURFACE_TESTS = process.env.LONGHUB_RUN_LEGACY_SURFACE_TESTS === "true";
 let api: ReturnType<typeof createCloudApiServer>;
 let baseUrl: string;
 let verifier: ReturnType<typeof createEntitlementVerifier>;
@@ -16,7 +22,14 @@ let eligibility: CloudPackEligibilitySource;
 let entitlementId: string;
 
 beforeAll(async () => {
-  api = createCloudApiServer({ executorUrl: "http://127.0.0.1:1", adminToken: ADMIN_TOKEN }).listen(0);
+  if (!RUN_LEGACY_SURFACE_TESTS) return;
+  // Historical Pack/entitlement regression only. Clean-launch production keeps
+  // the legacy surface disabled in the Cloud API bootstrap.
+  api = createCloudApiServer({
+    executorUrl: "http://127.0.0.1:1",
+    adminToken: ADMIN_TOKEN,
+    legacySurfaceEnabled: true,
+  }).listen(0);
   await once(api, "listening");
   baseUrl = `http://127.0.0.1:${(api.address() as AddressInfo).port}`;
   await new PackPublisher(baseUrl, ADMIN_TOKEN).publish(buildHrPackSource("1.0.0"));
@@ -37,7 +50,7 @@ beforeAll(async () => {
   verifier = createEntitlementVerifier({
     LONGHUB_CLOUD_URL: baseUrl,
     LONGHUB_DEVICE_TOKEN: device.device_token,
-    LONGHUB_DESKTOP_VERSION: "0.3.6",
+    LONGHUB_MANAGER_VERSION: "0.3.6",
   });
   eligibility = new CloudPackEligibilitySource({
     baseUrl,
@@ -46,9 +59,13 @@ beforeAll(async () => {
   });
 });
 
-afterAll(() => api.close());
+afterAll(() => {
+  if (RUN_LEGACY_SURFACE_TESTS) api.close();
+});
 
-describe("Bridge 在线 entitlement 复验", () => {
+describe.skipIf(!RUN_LEGACY_SURFACE_TESTS)(
+  "历史 Pack Bridge 在线 entitlement 复验（仅显式 LONGHUB_RUN_LEGACY_SURFACE_TESTS=true）",
+  () => {
   it("有效授权放行，撤销后同一 Core verifier 立即拒绝", async () => {
     const query = {
       agentId: "longhub-agent-hr",
@@ -70,4 +87,5 @@ describe("Bridge 在线 entitlement 复验", () => {
     await expect(eligibility.eligiblePackIds([{ packId: HR_PACK_ID, version: "1.0.0" }]))
       .resolves.toEqual(new Set());
   });
-});
+  },
+);

@@ -1,0 +1,44 @@
+[Unit]
+Description=LongHub clean-launch PostgreSQL migration
+Requires=postgresql.service
+After=postgresql.service network.target
+Before=longhub-executor.service longhub-cloud-api.service
+
+[Service]
+Type=oneshot
+User=longhub-migrator
+Group=longhub-migrator
+SupplementaryGroups=longhub-runtime
+WorkingDirectory=/opt/longhub/current
+EnvironmentFile=/etc/longhub/migrate.env
+Environment=PATH=/opt/longhub/node-v22.22.3-linux-x64/bin:/usr/bin:/bin
+Environment=PGCONNECT_TIMEOUT=10
+Environment="PGOPTIONS=-c statement_timeout=90000 -c lock_timeout=30000"
+ExecStart=/bin/bash infrastructure/deployment/scripts/migration-release-gate.sh run
+TimeoutStartSec=120
+RuntimeDirectory=longhub-migrate
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
+NoNewPrivileges=true
+LockPersonality=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHome=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+InaccessiblePaths=/var/lib/longhub/client-releases /var/www/longhub /etc/longhub/keys /etc/longhub/tls
+IPAddressDeny=any
+IPAddressAllow=localhost
+ProtectProc=invisible
+ProcSubset=pid
+RemoveIPC=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictRealtime=true
+RestrictSUIDSGID=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=

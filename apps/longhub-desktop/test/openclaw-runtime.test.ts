@@ -28,7 +28,7 @@ const versionedRuntime = {
   config_version: "2026-07-30T00:00:00.000Z",
   issued_at: "2026-07-30T00:00:00.000Z",
   expires_at: "2026-07-30T00:10:00.000Z",
-  compatible_desktop: { min_version: "0.0.0" },
+  compatible_manager: { min_version: "0.0.0" },
   product: { assistant_name: "龙枢助手", assistant_avatar_path: "/assets/longhub-avatar.png", welcome_message: "你好，我是龙枢助手。", quick_tasks: [] },
   features: { agent_catalog: true, file_upload: true, tool_execution: true },
   ...runtime,

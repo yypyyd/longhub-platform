@@ -18,6 +18,8 @@ describe("OpenClaw 龙枢产品化薄层", () => {
     expect(script).toContain("agent-chat__run-status-label");
     expect(script).toContain("Help me configure a channel");
     expect(script).toContain("龙枢助手会话");
+    expect(script).toContain("ordinaryUserAgentPanels");
+    expect(script).toContain("longhubAgentPanels");
     expect(openClawProductUiScript({
       assistant_name: "龙枢助手",
       welcome_message: "你好",

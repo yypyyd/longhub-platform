@@ -1,0 +1,44 @@
+[Unit]
+Description=LongHub private Cloud Skill Executor
+Requires=longhub-migrate.service
+After=longhub-migrate.service network.target
+
+[Service]
+Type=simple
+User=longhub-executor
+Group=longhub-executor
+SupplementaryGroups=longhub-runtime
+WorkingDirectory=/opt/longhub/current
+EnvironmentFile=/etc/longhub/executor.env
+Environment=PATH=/opt/longhub/node-v22.22.3-linux-x64/bin:/usr/bin:/bin
+ExecStartPre=/bin/bash infrastructure/deployment/scripts/migration-release-gate.sh check
+ExecStart=/bin/bash infrastructure/deployment/scripts/migration-release-gate.sh exec-executor
+Restart=on-failure
+RestartSec=3s
+UMask=0077
+NoNewPrivileges=true
+LockPersonality=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHome=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+InaccessiblePaths=/var/lib/longhub/client-releases /var/www/longhub /etc/longhub/keys /etc/longhub/tls
+IPAddressDeny=any
+IPAddressAllow=localhost
+ProtectProc=invisible
+ProcSubset=pid
+RemoveIPC=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictRealtime=true
+RestrictSUIDSGID=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

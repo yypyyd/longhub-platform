@@ -1,0 +1,33 @@
+name: Clean-launch Security Regression
+
+on:
+  schedule:
+    - cron: "17 18 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: clean-launch-security
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  security:
+    name: Cloud Skill, Manager and boundary security
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24.x"
+          cache: false
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.22.3
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm ci:security
+      - run: node scripts/run-ci-tier.mjs manager-test

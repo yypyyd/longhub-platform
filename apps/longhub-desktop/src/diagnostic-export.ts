@@ -52,7 +52,7 @@ export interface DesktopDiagnosticReport {
   schema_version: typeof DIAGNOSTIC_EXPORT_SCHEMA;
   generated_at: string;
   application: {
-    desktop_version: string;
+    manager_version: string;
     openclaw_version: string;
     electron_version: string;
     node_version: string;
@@ -181,7 +181,7 @@ export class DesktopDiagnosticState {
       schema_version: DIAGNOSTIC_EXPORT_SCHEMA,
       generated_at: generatedAt,
       application: {
-        desktop_version: safeRelease(this.application.desktopVersion),
+        manager_version: safeRelease(this.application.desktopVersion),
         openclaw_version: safeRelease(this.application.openClawVersion),
         electron_version: safeRelease(this.application.electronVersion),
         node_version: safeRelease(this.application.nodeVersion),

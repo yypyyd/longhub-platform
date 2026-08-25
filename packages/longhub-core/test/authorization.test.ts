@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   bridgeConfirmationBinding,
   bridgePayloadDigest,
+  buildBridgeConfirmationDisplay,
   clampBudget,
   intersectBridgePermissions,
   permissionRequiresConfirmation,
@@ -34,12 +35,73 @@ describe("Core 授权原语", () => {
     expect(changed).not.toBe(first);
     expect(bridgeConfirmationBinding({
       agentId: "hr",
+      skillId: "longhub.skill.offer-letter",
       profileVersion: grant.profileVersion,
       sessionId: "session-1",
       toolCallId: "call-1",
       permissions: ["connector:hr-api:write"],
       payloadDigest: first,
+      display: {
+        action: "生成录用通知书",
+        object: "候选人录用通知",
+        recipient: "张三",
+        dataScope: ["月薪：10000"],
+        estimatedCostCents: 0,
+      },
     })).toHaveLength(64);
+  });
+
+  it("确认展示只从受信声明和绑定参数计算，展示变化会改变 binding", () => {
+    const descriptor = {
+      action: "生成录用通知书",
+      object: "候选人录用通知",
+      recipientField: "candidateName",
+      dataFields: [{ label: "岗位", field: "position" }],
+      estimatedCostCents: 0,
+    };
+    expect(buildBridgeConfirmationDisplay(descriptor, {
+      candidateName: "张三",
+      position: "前端工程师",
+    })).toEqual({
+      action: "生成录用通知书",
+      object: "候选人录用通知",
+      recipient: "张三",
+      dataScope: ["岗位：前端工程师"],
+      estimatedCostCents: 0,
+    });
+    expect(() => buildBridgeConfirmationDisplay(
+      descriptor,
+      { candidateName: "张三\n伪造操作", position: "前端工程师" },
+    )).toThrow("内容无效");
+    const base = {
+      agentId: "hr",
+      skillId: "longhub.skill.offer-letter",
+      profileVersion: "1.0.0",
+      sessionId: "session-1",
+      toolCallId: "call-1",
+      permissions: ["connector:hr-api:write"],
+      payloadDigest: "a".repeat(64),
+    };
+    const firstBinding = bridgeConfirmationBinding({
+      ...base,
+      display: {
+        action: "生成录用通知书",
+        object: "候选人录用通知",
+        recipient: "张三",
+        dataScope: ["岗位：前端工程师"],
+        estimatedCostCents: 0,
+      },
+    });
+    expect(bridgeConfirmationBinding({
+      ...base,
+      display: {
+        action: "生成录用通知书",
+        object: "候选人录用通知",
+        recipient: "李四",
+        dataScope: ["岗位：前端工程师"],
+        estimatedCostCents: 0,
+      },
+    })).not.toBe(firstBinding);
   });
 
   it("调用方预算只能降低上限，写权限需要确认", () => {

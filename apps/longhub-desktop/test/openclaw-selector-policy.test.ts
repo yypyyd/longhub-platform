@@ -3,6 +3,7 @@ import {
   installOpenClawSelectorPolicy,
   OPENCLAW_SELECTOR_CONTRACT,
   openClawSelectorPolicyScript,
+  selectOpenClawAgent,
 } from "../src/openclaw-selector-policy.js";
 
 describe("OpenClaw Agent Selector 薄适配层", () => {
@@ -45,5 +46,16 @@ describe("OpenClaw Agent Selector 薄适配层", () => {
     expect(script).toContain("HR 助理");
     expect(script).toContain("点击安装");
     expect(script).not.toContain("deviceToken");
+  });
+
+  it("单 Agent 仍创建可见 Selector，Main 可通过同一策略触发真实切换", async () => {
+    const script = openClawSelectorPolicyScript({ allowedAgentIds: ["main"] });
+    expect(script).not.toContain("allowed.size + installableAgents.length <= 1");
+    expect(script).toContain("longhubSingleAgent");
+    let injected = "";
+    await expect(selectOpenClawAgent({
+      async executeJavaScript(code) { injected = code; return true; },
+    }, "main")).resolves.toBe(true);
+    expect(injected).toContain("policy.select");
   });
 });

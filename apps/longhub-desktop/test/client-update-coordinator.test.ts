@@ -12,15 +12,16 @@ function metadata(version = "0.5.0"): SignedClientUpdateMetadata {
   return {
     manifest: {
       schema_version: "longhub/client-update/v2",
+      product_surface: "longhub-manager",
       sequence: 9,
       version,
       channel: "stable",
       platform: "win32",
       arch: "x64",
-      filename: `LongHub-Setup-${version}.exe`,
+      filename: `LongHub-Manager-Setup-${version}.exe`,
       size: 1,
       sha256: "0".repeat(64),
-      url_path: `/downloads/LongHub-Setup-${version}.exe`,
+      url_path: `/downloads/LongHub-Manager-Setup-${version}.exe`,
       published_at: "2026-07-29T00:00:00.000Z",
       rollback_data_strategy: "snapshot_required",
       rollout: {
@@ -66,10 +67,10 @@ describe("稳定渠道客户端更新事务", () => {
         return { metadata: metadata("0.4.0"), artifactUrl: "https://cloud.example/rollback.exe" };
       },
       confirmDownload: async () => { calls.push("confirm-download"); return true; },
-      download: async () => { calls.push("download"); return "C:\\updates\\LongHub-Setup-0.5.0.exe"; },
+      download: async () => { calls.push("download"); return "C:\\updates\\LongHub-Manager-Setup-0.5.0.exe"; },
       downloadRollback: async () => {
         calls.push("download-rollback");
-        return "C:\\updates\\LongHub-Setup-0.4.0.exe";
+        return "C:\\updates\\LongHub-Manager-Setup-0.4.0.exe";
       },
       verifyInstaller: () => { calls.push("verify-installer"); },
       confirmInstall: async () => { calls.push("confirm-install"); return true; },
@@ -138,8 +139,8 @@ describe("稳定渠道客户端更新事务", () => {
         metadata: metadata("0.4.0"), artifactUrl: "https://cloud.example/rollback.exe",
       }),
       confirmDownload: async () => true,
-      download: async () => "C:\\updates\\LongHub-Setup-0.5.0.exe",
-      downloadRollback: async () => "C:\\updates\\LongHub-Setup-0.4.0.exe",
+      download: async () => "C:\\updates\\LongHub-Manager-Setup-0.5.0.exe",
+      downloadRollback: async () => "C:\\updates\\LongHub-Manager-Setup-0.4.0.exe",
       verifyInstaller: () => undefined,
       confirmInstall: async () => true,
       stopRuntime: async () => undefined,
@@ -165,8 +166,8 @@ describe("稳定渠道客户端更新事务", () => {
         metadata: metadata("0.4.0"), artifactUrl: "https://cloud.example/rollback.exe",
       }),
       confirmDownload: async () => true,
-      download: async () => "C:\\updates\\LongHub-Setup-0.5.0.exe",
-      downloadRollback: async () => "C:\\updates\\LongHub-Setup-0.4.0.exe",
+      download: async () => "C:\\updates\\LongHub-Manager-Setup-0.5.0.exe",
+      downloadRollback: async () => "C:\\updates\\LongHub-Manager-Setup-0.4.0.exe",
       verifyInstaller: () => undefined,
       confirmInstall: async () => true,
       stopRuntime: async () => { stopped = true; },
@@ -187,12 +188,12 @@ describe("客户端更新跨版本健康标记", () => {
     mkdirSync(join(root, "openclaw"));
     writeFileSync(join(root, "openclaw", "state.json"), "state", "utf8");
     writeFileSync(join(root, "agent-registry.json"), "{}", "utf8");
-    const installer = join(root, "LongHub-Setup-0.5.0.exe");
+    const installer = join(root, "LongHub-Manager-Setup-0.5.0.exe");
     writeFileSync(installer, "x", "utf8");
     const store = new ClientUpdateRecoveryStore(root);
     const rollbackDirectory = store.installerDirectory("0.4.0");
     mkdirSync(rollbackDirectory, { recursive: true });
-    const rollbackInstaller = join(rollbackDirectory, "LongHub-Setup-0.4.0.exe");
+    const rollbackInstaller = join(rollbackDirectory, "LongHub-Manager-Setup-0.4.0.exe");
     writeFileSync(rollbackInstaller, "x", "utf8");
     const pending = store.createPending(
       "0.4.0", metadata(), installer, metadata("0.4.0"), rollbackInstaller,
@@ -221,12 +222,12 @@ describe("客户端更新跨版本健康标记", () => {
     roots.push(root);
     mkdirSync(join(root, "openclaw"));
     writeFileSync(join(root, "openclaw", "state.json"), "stable", "utf8");
-    const targetInstaller = join(root, "LongHub-Setup-0.5.0.exe");
+    const targetInstaller = join(root, "LongHub-Manager-Setup-0.5.0.exe");
     writeFileSync(targetInstaller, "target", "utf8");
     const store = new ClientUpdateRecoveryStore(root);
     const rollbackDirectory = store.installerDirectory("0.4.0");
     mkdirSync(rollbackDirectory, { recursive: true });
-    const rollbackInstaller = join(rollbackDirectory, "LongHub-Setup-0.4.0.exe");
+    const rollbackInstaller = join(rollbackDirectory, "LongHub-Manager-Setup-0.4.0.exe");
     writeFileSync(rollbackInstaller, "rollback", "utf8");
     store.createPending(
       "0.4.0", metadata(), targetInstaller, metadata("0.4.0"), rollbackInstaller,

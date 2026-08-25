@@ -1,0 +1,24 @@
+{
+  "id": "longhub-cloud-skill",
+  "name": "LongHub Cloud Skill",
+  "description": "把 OpenClaw 的通用云端 Skill 调用安全发送到 LongHub Cloud API。",
+  "version": "0.2.1",
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+  },
+  "contracts": {
+    "tools": [
+      "longhub_cloud_skill"
+    ]
+  },
+  "toolMetadata": {
+    "longhub_cloud_skill": {
+      "optional": true
+    }
+  }
+}

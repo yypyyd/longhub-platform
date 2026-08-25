@@ -10,7 +10,7 @@ export interface WindowsInstallerSignature {
 }
 
 function validWindowsInstallerFile(path: string): boolean {
-  if (!existsSync(path) || !/^LongHub-Setup-\d+\.\d+\.\d+\.exe$/.test(basename(path))) return false;
+  if (!existsSync(path) || !/^LongHub-Manager-Setup-\d+\.\d+\.\d+\.exe$/.test(basename(path))) return false;
   if (realpathSync.native(path).toLowerCase() !== resolve(path).toLowerCase()) return false;
   const stat = lstatSync(path);
   return stat.isFile() && !stat.isSymbolicLink();

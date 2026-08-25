@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" />
+    <title>龙枢</title>
+    <link rel="stylesheet" href="/product-extension.css" />
+  </head>
+  <body>
+    <header class="header">
+      <img src="/longhub-avatar.png" alt="龙枢" />
+      <div><p>龙枢</p><h1 id="title">正在加载</h1></div>
+      <button id="close" type="button" aria-label="关闭">关闭</button>
+    </header>
+    <nav class="navigation" aria-label="当前位置"><span id="section">产品功能</span></nav>
+    <main class="content">
+      <section id="entry-view" class="empty-state">
+        <h2 id="heading">功能入口已就绪</h2>
+        <p id="description">后续版本会在这里提供受策略控制的产品能力。</p>
+        <p id="status" role="status" aria-live="polite">正在验证本机策略…</p>
+      </section>
+      <section id="agents-view" hidden>
+        <div class="skills-toolbar">
+          <div><p class="eyebrow">原生会话</p><h2>智能体</h2></div>
+          <span class="policy-badge">策略允许的设备范围</span>
+        </div>
+        <p id="agents-status" role="status" aria-live="polite">正在读取智能体…</p>
+        <div id="agent-management-list" class="agent-management-list"></div>
+        <section class="agent-install-section">
+          <div><h3>添加智能体</h3><p>这里只显示当前设备已授权、且客户端认识的签名智能体。</p></div>
+          <div id="agent-install-list" class="agent-install-list"></div>
+        </section>
+        <details class="advanced-workbench">
+          <summary><span>创建与编排</span><small>Content Skill、受限 Workflow、无代码 Agent 与摘要转交</small></summary>
+          <div class="advanced-toolbar"><p>设备本地 · 不产生新权限</p><label>基础智能体 <select id="nocode-agent"></select></label></div>
+          <div class="data-grid">
+          <article class="data-card">
+            <h3>Content Skill</h3>
+            <label>名称 <input id="content-name" maxlength="80" /></label>
+            <label>说明 <input id="content-description" maxlength="500" /></label>
+            <label>纯内容指令 <textarea id="content-instructions" maxlength="262144"></textarea></label>
+            <button id="content-create" class="primary" type="button">创建零权限 Content Skill</button>
+            <button id="openclaw-import" class="secondary" type="button">导入纯内容 OpenClaw Skill</button>
+            <label>导入/导出包 <textarea id="content-package" maxlength="524288"></textarea></label>
+            <button id="content-import" class="secondary" type="button">导入并重建身份</button>
+            <div id="content-list"></div>
+          </article>
+          <article class="data-card">
+            <h3>受限 Workflow</h3>
+            <label>名称 <input id="workflow-name" maxlength="80" /></label>
+            <label>静态步骤 JSON <textarea id="workflow-steps" maxlength="200000">[{"id":"step-1","kind":"skill","skillId":"","input":{}}]</textarea></label>
+            <button id="workflow-create" class="primary" type="button">验证并创建</button>
+            <div id="workflow-list"></div>
+          </article>
+          <article class="data-card">
+            <h3>无代码 Agent</h3>
+            <label>名称 <input id="overlay-name" maxlength="80" /></label>
+            <label>说明 <textarea id="overlay-description" maxlength="500"></textarea></label>
+            <label>风格 <select id="overlay-tone"><option value="balanced">均衡</option><option value="concise">简洁</option><option value="detailed">详细</option></select></label>
+            <button id="overlay-create" class="primary" type="button">基于签名 Profile 创建</button>
+            <div id="overlay-list"></div>
+          </article>
+          <article class="data-card">
+            <h3>跨 Agent 摘要转交</h3>
+            <label>目标智能体 <select id="handoff-target"></select></label>
+            <label>用户可见摘要 <textarea id="handoff-summary" maxlength="4000"></textarea></label>
+            <button id="handoff-preview" class="primary" type="button">生成预览</button>
+            <div id="handoff-result"></div>
+          </article>
+          </div>
+        </details>
+      </section>
+      <section id="skills-view" hidden>
+        <div class="skills-toolbar">
+          <div><p class="eyebrow">官方签名能力</p><h2>能力中心</h2></div>
+          <label>目标智能体 <select id="skill-agent"></select></label>
+        </div>
+        <p id="skills-status" role="status" aria-live="polite">正在读取能力目录…</p>
+        <div id="skills-list" class="skills-grid"></div>
+      </section>
+      <section id="account-view" hidden>
+        <div class="skills-toolbar">
+          <div><p class="eyebrow">当前设备本地数据</p><h2>我的数据</h2></div>
+          <label>目标智能体 <select id="account-agent"></select></label>
+        </div>
+        <p id="account-status" role="status" aria-live="polite">正在读取…</p>
+        <div class="data-grid">
+          <article class="data-card">
+            <h3>会话与附件</h3>
+            <label>本机搜索 <input id="session-search-query" maxlength="200" /></label>
+            <button id="session-search" class="secondary" type="button">搜索/清除</button>
+            <div id="session-list"></div><div id="attachment-list"></div>
+            <label>单会话导出 <textarea id="session-export" readonly></textarea></label>
+          </article>
+          <article class="data-card"><h3>回收站</h3><div id="trash-list"></div></article>
+          <article class="data-card">
+            <h3>当前 Agent 的个人资料</h3>
+            <label>标题 <input id="profile-title" maxlength="120" /></label>
+            <label>内容 <textarea id="profile-content" maxlength="200000"></textarea></label>
+            <button id="profile-add" class="primary" type="button">保存到本机</button>
+            <div id="profile-list"></div>
+          </article>
+          <article class="data-card">
+            <h3>企业知识</h3>
+            <label>查询 <input id="knowledge-query" maxlength="500" /></label>
+            <button id="knowledge-search" class="primary" type="button">查询引用</button>
+            <div id="citation-list"></div>
+          </article>
+        </div>
+      </section>
+      <section id="confirmation-view" class="confirmation-card" hidden>
+        <p class="eyebrow">请确认本次操作</p>
+        <h2 id="confirmation-action">操作确认</h2>
+        <dl>
+          <div><dt>目标智能体</dt><dd id="confirmation-agent"></dd></div>
+          <div><dt>能力</dt><dd id="confirmation-skill"></dd></div>
+          <div><dt>对象</dt><dd id="confirmation-object"></dd></div>
+          <div><dt>接收方</dt><dd id="confirmation-recipient"></dd></div>
+          <div><dt>数据范围</dt><dd><ul id="confirmation-data"></ul></dd></div>
+          <div><dt>权限</dt><dd><ul id="confirmation-permissions"></ul></dd></div>
+          <div><dt>预估费用</dt><dd id="confirmation-cost"></dd></div>
+          <div><dt>有效期</dt><dd id="confirmation-expiry"></dd></div>
+        </dl>
+        <p id="confirmation-status" role="status" aria-live="polite"></p>
+        <div class="actions">
+          <button id="deny" class="secondary" type="button">拒绝</button>
+          <button id="approve" class="primary" type="button">确认执行</button>
+        </div>
+      </section>
+    </main>
+    <script src="/product-extension.js"></script>
+  </body>
+</html>

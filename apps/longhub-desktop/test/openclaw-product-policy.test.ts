@@ -11,8 +11,11 @@ import {
 describe("OpenClaw 成品 UI 策略", () => {
   const chat = "http://127.0.0.1:18789/chat";
 
-  it("拦截基础设施路由并只保留产品聊天页面", () => {
-    for (const path of ["/overview", "/settings/general", "/config", "/channels", "/appearance"]) {
+  it("拦截控制面与任意执行路由", () => {
+    for (const path of [
+      "/overview", "/settings/general", "/config", "/channels", "/appearance", "/cron",
+      "/nodes", "/debug", "/logs", "/skills/workshop", "/worktrees", "/dreaming",
+    ]) {
       expect(isForbiddenOpenClawRoute(`http://127.0.0.1:18789${path}`, chat), path).toBe(true);
     }
     expect(isForbiddenOpenClawRoute("http://127.0.0.1:18789/chat", chat)).toBe(false);
@@ -23,23 +26,35 @@ describe("OpenClaw 成品 UI 策略", () => {
     expect(isForbiddenOpenClawRoute("https://example.com/settings/general", chat)).toBe(false);
   });
 
-  it("主窗口只允许同源非设置页面，拒绝外部来源与自定义协议", () => {
-    expect(isAllowedOpenClawNavigation("http://127.0.0.1:18789/chat?session=agent:main:main", chat)).toBe(true);
+  it("主窗口开放已审查的同源原生页面，拒绝控制面、外部来源与自定义协议", () => {
+    for (const path of ["/chat?session=agent:main:main", "/activity", "/agents", "/sessions", "/usage", "/tasks", "/skills"]) {
+      expect(isAllowedOpenClawNavigation(`http://127.0.0.1:18789${path}`, chat), path).toBe(true);
+    }
     expect(isAllowedOpenClawNavigation("http://127.0.0.1:18789/settings/general", chat)).toBe(false);
-    expect(isAllowedOpenClawNavigation("http://127.0.0.1:18789/tasks", chat)).toBe(false);
-    expect(isAllowedOpenClawNavigation("http://127.0.0.1:18789/agents", chat)).toBe(false);
+    expect(isAllowedOpenClawNavigation("http://127.0.0.1:18789/skills/workshop", chat)).toBe(false);
+    expect(isAllowedOpenClawNavigation("http://127.0.0.1:18789/agents/files", chat)).toBe(false);
+    expect(isAllowedOpenClawNavigation("http://127.0.0.1:18789/other/chat", chat)).toBe(false);
     expect(isAllowedOpenClawNavigation("https://example.com/chat", chat)).toBe(false);
     expect(isAllowedOpenClawNavigation("longhub-agent://install/?packId=longhub.hr-suite", chat)).toBe(false);
   });
 
-  it("隐藏模型选择器与设置入口", () => {
+  it("支持配置了 basePath 的锁定 Gateway，但不接受其他前缀", () => {
+    const based = "http://127.0.0.1:18789/longhub/chat";
+    expect(isAllowedOpenClawNavigation("http://127.0.0.1:18789/longhub/agents", based)).toBe(true);
+    expect(isAllowedOpenClawNavigation("http://127.0.0.1:18789/other/agents", based)).toBe(false);
+  });
+
+  it("保留官方侧边栏，同时隐藏模型、设置与原生高风险写控件", () => {
     expect(OPENCLAW_PRODUCT_CSS).toContain("data-chat-model-select");
     expect(OPENCLAW_PRODUCT_CSS).toContain("data-chat-model-option");
     expect(OPENCLAW_PRODUCT_CSS).toContain("chat-controls__inline-select-menu--combined");
     expect(OPENCLAW_PRODUCT_CSS).toContain("chat-settings-chip");
     expect(OPENCLAW_PRODUCT_CSS).toContain("/settings/");
-    expect(OPENCLAW_PRODUCT_CSS).toContain(".sidebar-nav");
+    expect(OPENCLAW_PRODUCT_CSS).not.toContain("\n  .sidebar-nav,");
     expect(OPENCLAW_PRODUCT_CSS).toContain(".sidebar-footer-icon");
+    expect(OPENCLAW_PRODUCT_CSS).toContain("agent-model-select");
+    expect(OPENCLAW_PRODUCT_CSS).toContain("clawhub-search");
+    expect(OPENCLAW_PRODUCT_CSS).toContain("agent-tool-toggle");
     expect(OPENCLAW_PRODUCT_CSS).toContain(".agent-chat__suggestion");
   });
 

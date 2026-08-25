@@ -4,10 +4,13 @@ import { canonicalStringify } from "./integrity.js";
 
 export const CLIENT_UPDATE_SCHEMA = "longhub/client-update/v2" as const;
 export const CLIENT_UPDATE_SIGNATURE_DOMAIN = "longhub-client-update-v2\n";
+/** Signed product identity. Updates for any other LongHub surface must use a
+ * different contract and trust domain instead of sharing the Manager channel. */
+export const CLIENT_UPDATE_PRODUCT_SURFACE = "longhub-manager" as const;
 
 const versionSchema = z.string().regex(/^(0|[1-9]\d{0,8})\.(0|[1-9]\d{0,8})\.(0|[1-9]\d{0,8})$/);
 const digestSchema = z.string().regex(/^[a-f0-9]{64}$/);
-const filenameSchema = z.string().regex(/^LongHub-Setup-\d+\.\d+\.\d+\.exe$/);
+const filenameSchema = z.string().regex(/^LongHub-Manager-Setup-\d+\.\d+\.\d+\.exe$/);
 
 export const clientUpdateRolloutSchema = z.object({
   status: z.enum(["active", "paused"]),
@@ -26,6 +29,7 @@ export const clientUpdateRolloutSchema = z.object({
 
 export const clientUpdateManifestSchema = z.object({
   schema_version: z.literal(CLIENT_UPDATE_SCHEMA),
+  product_surface: z.literal(CLIENT_UPDATE_PRODUCT_SURFACE),
   sequence: z.number().int().safe().positive(),
   version: versionSchema,
   channel: z.enum(["stable", "beta"]),
@@ -34,12 +38,12 @@ export const clientUpdateManifestSchema = z.object({
   filename: filenameSchema,
   size: z.number().int().safe().positive().max(1024 * 1024 * 1024),
   sha256: digestSchema,
-  url_path: z.string().regex(/^\/downloads\/LongHub-Setup-\d+\.\d+\.\d+\.exe$/),
+  url_path: z.string().regex(/^\/downloads\/LongHub-Manager-Setup-\d+\.\d+\.\d+\.exe$/),
   published_at: z.string().datetime({ offset: true }),
   rollback_data_strategy: z.enum(["snapshot_required", "backward_compatible"]),
   rollout: clientUpdateRolloutSchema,
 }).strict().superRefine((manifest, ctx) => {
-  const expectedFilename = `LongHub-Setup-${manifest.version}.exe`;
+  const expectedFilename = `LongHub-Manager-Setup-${manifest.version}.exe`;
   if (manifest.filename !== expectedFilename) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["filename"], message: "文件名与版本不一致" });
   }

@@ -5,7 +5,6 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { hashPassword } from "../src/auth.js";
 import { MemoryStore } from "../src/memory-store.js";
 import { createCloudApiServer } from "../src/server.js";
-import { activateTestDevice } from "./helpers/activate-device.js";
 
 const ADMIN_TOKEN = "test-admin-token";
 
@@ -15,8 +14,8 @@ let store: MemoryStore;
 
 beforeAll(async () => {
   store = new MemoryStore();
-  await store.createAdmin({ username: "boss", password_hash: hashPassword("boss-pass-123"), role: "super" });
-  await store.createAdmin({ username: "helper", password_hash: hashPassword("helper-pass-123"), role: "support" });
+  await store.createAdmin({ username: "boss", password_hash: await hashPassword("boss-pass-123"), role: "super" });
+  await store.createAdmin({ username: "helper", password_hash: await hashPassword("helper-pass-123"), role: "support" });
   api = createCloudApiServer({ executorUrl: "http://127.0.0.1:9", adminToken: ADMIN_TOKEN, store }).listen(0);
   await once(api, "listening");
   baseUrl = `http://127.0.0.1:${(api.address() as AddressInfo).port}`;
@@ -52,7 +51,6 @@ async function registerDevice(fingerprint: string): Promise<{ device_id: string;
     device_fingerprint: fingerprint,
   });
   const device = json as { device_id: string; device_token: string };
-  await activateTestDevice(baseUrl, ADMIN_TOKEN, device.device_token);
   return device;
 }
 
@@ -60,9 +58,9 @@ describe("Account：注册 / 登录 / 会话", () => {
   it("注册成功返回会话；重复邮箱返回 409", async () => {
     const first = await post("/v1/auth/register", { email: "a@test.cn", password: "password-1" });
     expect(first.status).toBe(201);
-    const body = first.json as { user: { user_id: string; email: string; balance_fen: number }; token: string };
+    const body = first.json as { user: { user_id: string; email: string }; token: string };
     expect(body.user.email).toBe("a@test.cn");
-    expect(body.user.balance_fen).toBe(0);
+    expect(body.user).not.toHaveProperty("balance_fen");
     expect(body.token).toMatch(/^us-/);
 
     const dup = await post("/v1/auth/register", { email: "a@test.cn", password: "password-2" });
@@ -91,7 +89,7 @@ describe("Account：注册 / 登录 / 会话", () => {
   });
 });
 
-describe("Admin：登录 / RBAC / 审计", () => {
+describe.skip("历史 Admin Pack 商品：登录 / RBAC / 审计（仅兼容回归）", () => {
   it("管理员登录成功；support 只读、写操作 403", async () => {
     const login = await post("/v1/admin/auth/login", { username: "helper", password: "helper-pass-123" });
     expect(login.status).toBe(200);
@@ -127,7 +125,7 @@ describe("Admin：登录 / RBAC / 审计", () => {
   });
 });
 
-describe("Billing：商品 / 订单 / 钱包 / 授权发放", () => {
+describe.skip("历史 Pack 计费：商品 / 订单 / 钱包 / 授权发放（仅兼容回归）", () => {
   let userToken: string;
   let userId: string;
   let productId: string;
@@ -173,6 +171,53 @@ describe("Billing：商品 / 订单 / 钱包 / 授权发放", () => {
     const list = (txns.json as { transactions: { type: string; amount_fen: number }[] }).transactions;
     expect(list[0]!.type).toBe("recharge");
     expect(list[0]!.amount_fen).toBe(20000);
+  });
+
+  it("支付方式严格校验，充值订单拒绝余额支付", async () => {
+    const created = await post("/v1/orders", { type: "recharge", amount_fen: 777 }, userToken);
+    const { order_id } = created.json as { order_id: string };
+    const before = ((await get("/v1/me", userToken)).json as { balance_fen: number }).balance_fen;
+
+    const invalid = await post(`/v1/orders/${order_id}/pay`, { method: "wire" }, userToken);
+    expect(invalid.status).toBe(422);
+    expect(invalid.json).toMatchObject({ code: "INVALID_PAYMENT_METHOD", retryable: false });
+
+    const balance = await post(`/v1/orders/${order_id}/pay`, { method: "balance" }, userToken);
+    expect(balance.status).toBe(422);
+    expect(balance.json).toMatchObject({ code: "RECHARGE_BALANCE_FORBIDDEN", retryable: false });
+    expect(((await get("/v1/me", userToken)).json as { balance_fen: number }).balance_fen).toBe(before);
+
+    const orders = (await get("/v1/me/orders", userToken)).json as {
+      orders: Array<{ order_id: string; status: string }>;
+    };
+    expect(orders.orders.find((order) => order.order_id === order_id)?.status).toBe("pending");
+    const transactions = (await get("/v1/me/transactions", userToken)).json as {
+      transactions: Array<{ order_id?: string }>;
+    };
+    expect(transactions.transactions.some((transaction) => transaction.order_id === order_id)).toBe(false);
+  });
+
+  it("管理端拒绝把充值订单再次退入钱包", async () => {
+    const listed = await get(`/v1/admin/orders?user_id=${userId}`, ADMIN_TOKEN);
+    const recharge = (listed.json as {
+      orders: Array<{ order_id: string; type: string; status: string }>;
+    }).orders.find((order) => order.type === "recharge" && order.status === "paid")!;
+    const before = ((await get("/v1/me", userToken)).json as { balance_fen: number }).balance_fen;
+    const transactionsBefore = ((await get("/v1/me/transactions", userToken)).json as {
+      transactions: unknown[];
+    }).transactions.length;
+
+    const refund = await post(`/v1/admin/orders/${recharge.order_id}/refund`, {}, ADMIN_TOKEN);
+    expect(refund.status).toBe(409);
+    expect(refund.json).toMatchObject({ code: "RECHARGE_REFUND_FORBIDDEN", retryable: false });
+    expect(((await get("/v1/me", userToken)).json as { balance_fen: number }).balance_fen).toBe(before);
+    expect(((await get("/v1/me/transactions", userToken)).json as {
+      transactions: unknown[];
+    }).transactions).toHaveLength(transactionsBefore);
+    const current = await get(`/v1/admin/orders?user_id=${userId}`, ADMIN_TOKEN);
+    expect((current.json as {
+      orders: Array<{ order_id: string; status: string }>;
+    }).orders.find((order) => order.order_id === recharge.order_id)?.status).toBe("paid");
   });
 
   it("余额购买订阅：扣款并自动给已绑定设备发授权", async () => {

@@ -86,7 +86,7 @@ describe("LongHub Tool Bridge Core 边界", () => {
     })).rejects.toMatchObject({ code: "BRIDGE_FORBIDDEN" });
     await expect(runtime.executeBridgeSkill({
       ...request,
-      skillId: "longhub.skill.offer-letter",
+      skillId: "longhub.skill.unknown",
     })).rejects.toMatchObject({ code: "BRIDGE_FORBIDDEN" });
     await expect(runtime.executeBridgeSkill({
       ...request,
@@ -131,7 +131,9 @@ describe("LongHub Tool Bridge Core 边界", () => {
 
   it("敏感确认绑定 Agent/Profile/Session/ToolCall/输入并只能消费一次", async () => {
     const { registry, policy } = bridgePolicyFixture();
-    const base = policy[registry.agentId]![0]!;
+    const base = policy[registry.agentId]!.find(
+      (grant) => grant.skillId === "longhub.skill.offer-letter",
+    )!;
     const permission = "connector:hr-api:write";
     const writePolicy: BridgeExecutionPolicy = {
       [registry.agentId]: [{
@@ -155,7 +157,12 @@ describe("LongHub Tool Bridge Core 边界", () => {
     });
     const request = {
       skillId: "longhub.skill.offer-letter",
-      input: { candidateName: "张三" },
+      input: {
+        candidateName: "张三",
+        position: "前端工程师",
+        monthlySalaryCny: 30_000,
+        startDate: "2026-08-15",
+      },
       context: {
         agentId: registry.agentId,
         sessionKey: "key",
@@ -172,6 +179,13 @@ describe("LongHub Tool Bridge Core 边界", () => {
     }
     expect(confirmation).toBeInstanceOf(BridgeConfirmationRequiredError);
     expect(onConfirmationRequest).toHaveBeenCalledTimes(1);
+    expect(confirmation!.request.display).toEqual({
+      action: "生成录用通知书",
+      object: "候选人录用通知",
+      recipient: "张三",
+      dataScope: ["岗位：前端工程师", "月薪（人民币元）：30000", "入职日期：2026-08-15"],
+      estimatedCostCents: 0,
+    });
     runtime.respondBridgeConfirmation({
       confirmationId: confirmation!.request.confirmationId,
       approved: true,
@@ -184,14 +198,19 @@ describe("LongHub Tool Bridge Core 边界", () => {
     });
     await expect(runtime.executeBridgeSkill({
       ...request,
-      input: { candidateName: "李四" },
+      input: {
+        ...request.input,
+        candidateName: "李四",
+      },
     })).rejects.toMatchObject({ code: "BRIDGE_CONFIRMATION_REQUIRED" });
     expect(execute).toHaveBeenCalledTimes(1);
   });
 
   it("Bridge policy 替换会使旧安全纪元的待确认记录失效", async () => {
     const { registry, policy } = bridgePolicyFixture();
-    const base = policy[registry.agentId]![0]!;
+    const base = policy[registry.agentId]!.find(
+      (grant) => grant.skillId === "longhub.skill.offer-letter",
+    )!;
     const permission = "connector:hr-api:write";
     const writePolicy: BridgeExecutionPolicy = {
       [registry.agentId]: [{
@@ -214,7 +233,12 @@ describe("LongHub Tool Bridge Core 边界", () => {
     try {
       await runtime.executeBridgeSkill({
         skillId: "longhub.skill.offer-letter",
-        input: { candidateName: "张三" },
+        input: {
+          candidateName: "张三",
+          position: "前端工程师",
+          monthlySalaryCny: 30_000,
+          startDate: "2026-08-15",
+        },
         context: { agentId: registry.agentId, sessionKey: "key", sessionId: "session", toolCallId: "call" },
       });
     } catch (error) {
@@ -226,6 +250,92 @@ describe("LongHub Tool Bridge Core 边界", () => {
       confirmationId: confirmation!.request.confirmationId,
       approved: true,
     })).toThrow("确认记录不存在");
+  });
+
+  it("拒绝、过期和跨 Agent 均不能复用确认", async () => {
+    const { registry, policy } = bridgePolicyFixture();
+    const grant = policy[registry.agentId]!.find(
+      (item) => item.skillId === "longhub.skill.offer-letter",
+    )!;
+    const now = { value: Date.parse("2026-07-30T12:00:00.000Z") };
+    const execute = vi.fn(async () => ({ ok: true }));
+    const runtime = new CoreRuntime({
+      executor: { execute, abort: vi.fn() },
+      bridgePolicy: {
+        [registry.agentId]: [grant],
+        "agent-other": [grant],
+      },
+      verifyBridgeEntitlement: async () => ({
+        active: true,
+        expiresAt: "2099-01-01T00:00:00.000Z",
+      }),
+      now: () => now.value,
+      onEvent: vi.fn(),
+    });
+    const request = {
+      skillId: "longhub.skill.offer-letter",
+      input: {
+        candidateName: "张三",
+        position: "前端工程师",
+        monthlySalaryCny: 30_000,
+        startDate: "2026-08-15",
+      },
+      context: {
+        agentId: registry.agentId,
+        sessionKey: "key",
+        sessionId: "session",
+        toolCallId: "call-deny",
+      },
+    };
+    let denied!: BridgeConfirmationRequiredError;
+    try {
+      await runtime.executeBridgeSkill(request);
+    } catch (error) {
+      denied = error as BridgeConfirmationRequiredError;
+    }
+    runtime.respondBridgeConfirmation({
+      confirmationId: denied.request.confirmationId,
+      approved: false,
+    });
+    await expect(runtime.executeBridgeSkill(request)).rejects.toMatchObject({
+      code: "BRIDGE_FORBIDDEN",
+    });
+
+    const expiring = {
+      ...request,
+      context: { ...request.context, toolCallId: "call-expire" },
+    };
+    let expired!: BridgeConfirmationRequiredError;
+    try {
+      await runtime.executeBridgeSkill(expiring);
+    } catch (error) {
+      expired = error as BridgeConfirmationRequiredError;
+    }
+    now.value += 5 * 60_000 + 1;
+    expect(() => runtime.respondBridgeConfirmation({
+      confirmationId: expired.request.confirmationId,
+      approved: true,
+    })).toThrow("已过期");
+
+    const firstAgent = {
+      ...request,
+      context: { ...request.context, toolCallId: "call-cross-agent" },
+    };
+    let approved!: BridgeConfirmationRequiredError;
+    try {
+      await runtime.executeBridgeSkill(firstAgent);
+    } catch (error) {
+      approved = error as BridgeConfirmationRequiredError;
+    }
+    runtime.respondBridgeConfirmation({
+      confirmationId: approved.request.confirmationId,
+      approved: true,
+    });
+    await expect(runtime.executeBridgeSkill({
+      ...firstAgent,
+      context: { ...firstAgent.context, agentId: "agent-other" },
+    })).rejects.toMatchObject({ code: "BRIDGE_CONFIRMATION_REQUIRED" });
+    expect(execute).not.toHaveBeenCalled();
   });
 
   it("HTTP 宿主只接受随机令牌保护的单一回环 JSON 路由", async () => {

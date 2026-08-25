@@ -3,6 +3,8 @@
 > Schema ID：`longhub/agent-profile/v1`  
 > 规范实现：`packages/longhub-pack-schema/src/agent-profile.ts`  
 > 联合校验：`packages/longhub-pack-schema/src/profile-validation.ts`
+>
+> 状态：历史/废弃；clean-launch 不发布或迁移 Agent Pack/Profile，Manager 只管理原生 OpenClaw 与 Cloud Skill 适配器。
 
 Agent Profile 是用户在龙枢客户端中一键切换的智能体。Pack Manifest 的
 `agentTemplate.profilePath` 必须指向 Pack 内的 JSON Profile；Profile、Manifest 和全部引用文件
@@ -40,7 +42,7 @@ Agent Profile 是用户在龙枢客户端中一键切换的智能体。Pack Mani
     "entitlementExpiryPolicy": "readonly"
   },
   "compatibility": {
-    "minDesktopVersion": "1.0.0",
+    "minManagerVersion": "1.0.0",
     "openclawVersion": "2026.7.1-2",
     "profileMigrationVersion": 1
   },
@@ -60,7 +62,7 @@ Agent Profile 是用户在龙枢客户端中一键切换的智能体。Pack Mani
 - Profile 必须覆盖 Manifest 中全部 required capability，不能引用未声明 capability。
 - 同一 capability 的 permissions 必须在 Profile 与 Manifest 中完全一致。
 - 所有 workspace/avatar 引用文件必须存在，并随 Pack 一起签名。
-- Profile 与 Pack 的 `minDesktopVersion` 必须一致；`openclawVersion` 是精确兼容版本。
+- Profile 与历史 Pack 的 `minManagerVersion` 必须一致；`openclawVersion` 是精确兼容版本。
 
 ## 生命周期策略
 
@@ -72,7 +74,7 @@ Agent Profile 是用户在龙枢客户端中一键切换的智能体。Pack Mani
 
 ## 摘要与签名
 
-摘要输入为规范化的：
+摘要输入为规范化的（仅保留供历史审计）：
 
 ```text
 {

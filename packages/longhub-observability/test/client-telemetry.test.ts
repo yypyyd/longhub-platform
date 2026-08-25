@@ -15,7 +15,7 @@ function validBatch(): unknown {
     events: [{
       event_type: "client_started",
       occurred_at: "2026-07-30T08:00:00.000Z",
-      desktop_version: "0.4.0",
+      manager_version: "0.4.0",
       openclaw_version: "2026.7.1-2",
       platform: "win32",
       architecture: "x64",
@@ -37,6 +37,16 @@ describe("严格匿名客户端遥测契约", () => {
   ])("拒绝事件上的%s字段", (_label, extra) => {
     const batch = validBatch() as { events: Record<string, unknown>[] };
     Object.assign(batch.events[0]!, extra);
+    expect(() => parseClientTelemetryBatch(batch, NOW)).toThrow(ClientTelemetryValidationError);
+  });
+
+  it("clean launch 拒绝旧 desktop_version 字段，不提供别名", () => {
+    const batch = validBatch() as { events: Array<Record<string, unknown>> };
+    const { manager_version: _managerVersion, ...withoutManagerVersion } = batch.events[0]!;
+    batch.events[0] = {
+      ...withoutManagerVersion,
+      desktop_version: "0.4.0",
+    };
     expect(() => parseClientTelemetryBatch(batch, NOW)).toThrow(ClientTelemetryValidationError);
   });
 

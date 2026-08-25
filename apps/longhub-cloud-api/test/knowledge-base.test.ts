@@ -12,7 +12,7 @@ let baseUrl: string;
 let token: string;
 
 beforeAll(async () => {
-  server = createCloudApiServer({ executorUrl: "http://127.0.0.1:1", store, adminToken: "admin-kb", knowledgeDataKey }).listen(0);
+  server = createCloudApiServer({ executorUrl: "http://127.0.0.1:1", store, adminToken: "admin-kb", knowledgeDataKey, legacySurfaceEnabled: true }).listen(0);
   await once(server, "listening");
   baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   const registered = await fetch(`${baseUrl}/v1/devices/register`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ platform: "windows", app_version: "0.6.0", device_fingerprint: "kb-device" }) });
@@ -34,5 +34,17 @@ describe("租户知识库与引用", () => {
     const audits = await store.listAudits();
     expect(audits.some((audit) => audit.action === "knowledge.document.create")).toBe(true);
     expect(JSON.stringify(audits)).not.toContain("十个工作日");
+
+    const documentId = (await store.listKnowledgeDocuments("tenant-default"))[0]!.document_id;
+    const deleted = await fetch(`${baseUrl}/v1/admin/knowledge-documents/${documentId}`, {
+      method: "DELETE", headers: { authorization: "Bearer admin-kb" },
+    });
+    expect(deleted.status).toBe(200);
+    const afterDelete = await fetch(`${baseUrl}/v1/knowledge/query`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ query: "差旅 报销" }),
+    });
+    expect(await afterDelete.json()).toEqual({ citations: [] });
   });
 });

@@ -11,6 +11,7 @@ import {
   type RpcMessage,
   type TaskEvent,
   type BridgeConfirmationRequest,
+  parseBridgeConfirmationRequest,
 } from "@longhub/core";
 
 export class CoreRequestError extends Error {
@@ -67,8 +68,12 @@ export class CoreClient {
         const event = msg.params as unknown as TaskEvent;
         for (const listener of this.eventListeners) listener(event);
       } else if ("method" in msg && msg.method === "event.confirm.request") {
-        const request = msg.params as unknown as BridgeConfirmationRequest;
-        for (const listener of this.confirmationListeners) listener(request);
+        try {
+          const request = parseBridgeConfirmationRequest(msg.params);
+          for (const listener of this.confirmationListeners) listener(request);
+        } catch {
+          // 子进程事件不符合严格契约时安全丢弃，不能把任意载荷交给确认 UI。
+        }
       }
     });
   }

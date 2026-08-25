@@ -3,7 +3,7 @@ import { createRequire } from "node:module";
 import { dirname, resolve, sep } from "node:path";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { verifyBrandAssets, verifyRelease } from "./release-verification.mjs";
+import { verifyBrandAssets, verifyRelease, verifySkillTrust } from "./release-verification.mjs";
 import { verifyExternalRuntimeManifest } from "./openclaw-runtime-manifest.mjs";
 
 function main() {
@@ -20,6 +20,7 @@ function main() {
   if (process.platform !== "win32") throw new Error("Windows 安装包只能在 Windows 构建机生成");
 
   verifyBrandAssets(packageRoot, { requireApproved: mode === "public" });
+  verifySkillTrust(packageRoot, { requireApproved: mode === "public" });
   verifyExternalRuntimeManifest(packageRoot);
   if (mode === "public" && !process.env.LONGHUB_EXPECTED_SIGNER_SUBJECT?.trim()) {
     throw new Error("正式发布必须设置 LONGHUB_EXPECTED_SIGNER_SUBJECT，并向 electron-builder 提供签名证书");

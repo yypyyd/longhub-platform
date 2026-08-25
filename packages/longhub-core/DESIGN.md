@@ -16,8 +16,8 @@ Desktop 预先计算的 `grantedPermissions`；entitlement 与 Pack 吊销状态
 - Bridge 工具上下文包含 OpenClaw 注入的 Agent、Session 和 ToolCall 标识。
 - 有效权限是 Bridge 最小需求在 Profile、Pack、租户和设备集合中的交集；entitlement 是执行门。
 - Bridge 预算来自策略并受 Core 全局上限收敛，模型不能提交预算。
-- 敏感确认绑定 Agent、Profile 版本、Session、ToolCall、权限和规范化输入摘要，五分钟过期且
-  一次性消费。
+- 敏感确认绑定 Agent、Skill、Profile 版本、Session、ToolCall、权限、规范化输入摘要和可信展示
+  载荷，五分钟过期且一次性消费。
 - 旧 `task.submit` 只能执行零权限技能；调用方预算只能降低，不能抬高 Core 上限。
 - Bridge policy 可由可信 Desktop Core RPC 动态整表替换；Pack 停用/撤销时先更新 Core，再移除
   OpenClaw Selector，保证已打开会话没有执行窗口。
@@ -31,11 +31,11 @@ Skill Worker 仍需检查 Core 下发的权限；签名只验证 Pack 来源与�
 
 ## 已知限制
 
-- 当前只向 OpenClaw 暴露只读简历初筛，因此确认事件尚未接入 Control UI 的交互卡片。
+- 已以录用通知书写工具贯通确认中心；其他写 Skill 必须先增加受信展示声明和独立验收，不能自动继承。
 - 租户/设备策略当前使用 Desktop 产品安全上限；后台持久化策略管理将在后续控制面任务扩展。
 - entitlement Selector 同步默认 30 秒轮询；Core 仍逐次在线复验，因此同步延迟不会放宽执行授权。
-- 受限 Workflow 和可见多 Agent DAG 尚未实现。未来工作流本身不能携带权限或把一次确认传给多个
-  步骤；Core 必须为每个子 Skill 分别复验可信上下文、entitlement、权限、预算和确认。
+- 受限 Workflow Engine 已实现静态 DAG 顺序执行、逐步骤可信上下文、entitlement、权限、预算、确认
+  与幂等检查；工作流本身不能携带权限或把一次确认传给多个步骤。任意代码、循环和递归仍不在边界内。
 - 跨 Agent 摘要转交只能传递用户确认的内容，不能继承来源 Agent 的权限、记忆或确认记录。详细边界见
   [../../PRODUCT_FEATURE_POLICY.md](../../PRODUCT_FEATURE_POLICY.md) 和
   [../../SKILL_PLATFORM.md](../../SKILL_PLATFORM.md)。
@@ -43,6 +43,25 @@ Skill Worker 仍需检查 Core 下发的权限；签名只验证 Pack 来源与�
   Workflow，多 Agent 编排不进入 1.0 范围。
 
 ## 变更历史
+
+### 2026-07-31 - 实现受限 Workflow 逐步骤执行边界
+
+**变更内容**：新增受限 Workflow Engine，对静态验证后的步骤逐一执行 Core policy、预算、确认与幂等
+检查，并拒绝企业策略禁止的外部写入。
+
+**变更理由**：用户组合能力不能成为新的权限来源，也不能因重试或一次确认造成重复副作用。
+
+**影响范围**：Core Runtime、Workflow DSL、Desktop 无代码工作台和跨 Agent 转交。
+
+### 2026-07-30 - Confirmation Center V1 可信绑定
+
+**变更内容**：确认请求增加 skillId 和 Core 计算的 display；display 与真实参数一起进入 binding，
+严格解析子进程事件，并以五分钟一次性状态机处理批准、拒绝、过期、重放和策略纪元替换。
+
+**变更理由**：只有参数摘要无法向用户可信展示实际动作；若展示不进入 binding，确认 UI 可与执行参数
+分离并形成确认伪造。
+
+**影响范围**：Core 授权原语、Bridge execute、Core RPC 事件和 Desktop 确认中心。
 
 ### 2026-07-30 - 约束用户工作流与多 Agent 编排授权
 

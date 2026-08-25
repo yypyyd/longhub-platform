@@ -18,7 +18,7 @@ export interface CatalogPack {
   pack_id: string;
   name: string;
   latest_version: string;
-  min_desktop_version: string;
+  min_manager_version: string;
 }
 
 export interface DeviceActivationStatus {

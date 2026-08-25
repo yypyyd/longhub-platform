@@ -21,7 +21,7 @@ const trustedKeys = new Map([[KEY_ID, publicPem]]);
 const installRoot = mkdtempSync(join(tmpdir(), "longhub-packs-"));
 afterAll(() => rmSync(installRoot, { recursive: true, force: true }));
 
-function withAgentProfile(files: Record<string, string>, minDesktopVersion = "1.0.0"): Record<string, string> {
+function withAgentProfile(files: Record<string, string>, minManagerVersion = "1.0.0"): Record<string, string> {
   const profile = {
     schemaVersion: "longhub/agent-profile/v1",
     id: "longhub.agent.hr",
@@ -35,7 +35,7 @@ function withAgentProfile(files: Record<string, string>, minDesktopVersion = "1.
     memory: { mode: "isolated" },
     lifecycle: { defaultSessionTitle: "HR 新会话", entitlementExpiryPolicy: "readonly" },
     compatibility: {
-      minDesktopVersion,
+      minManagerVersion,
       openclawVersion: "2026.7.1-2",
       profileMigrationVersion: 1,
     },
@@ -50,13 +50,13 @@ function withAgentProfile(files: Record<string, string>, minDesktopVersion = "1.
 function buildPack(
   version: string,
   inputFiles: Record<string, string>,
-  options: { minDesktopVersion?: string; signingKeyId?: string } = {},
+  options: { minManagerVersion?: string; signingKeyId?: string } = {},
 ): PackFile {
-  const minDesktopVersion = options.minDesktopVersion ?? "1.0.0";
-  const files = withAgentProfile(inputFiles, minDesktopVersion);
+  const minManagerVersion = options.minManagerVersion ?? "1.0.0";
+  const files = withAgentProfile(inputFiles, minManagerVersion);
   const manifest: PackManifest = {
     schemaVersion: "longhub/v1",
-    pack: { id: "longhub.hr-suite", version, minDesktopVersion },
+    pack: { id: "longhub.hr-suite", version, minManagerVersion },
     agentTemplate: { id: "longhub.agent.hr", version: "1.0.0", profilePath: "agent-profile.json" },
     capabilities: [
       { id: "longhub.capability.recruitment", version: "1.0.0", required: true, permissions: [] },
@@ -141,7 +141,7 @@ describe("套装签名、安装、原子切换与回滚", () => {
   });
 
   it("Desktop 版本不兼容被拒绝", () => {
-    const pack = buildPack("1.1.0", { "agent.yaml": "id: hr" }, { minDesktopVersion: "9.9.9" });
+    const pack = buildPack("1.1.0", { "agent.yaml": "id: hr" }, { minManagerVersion: "9.9.9" });
     const result = installer.install(pack, { ...ctx, desktopVersion: "1.0.0" });
     expect(result).toMatchObject({ ok: false, code: "DESKTOP_INCOMPATIBLE" });
   });

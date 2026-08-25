@@ -16,7 +16,7 @@ export function createEntitlementVerifier(env: NodeJS.ProcessEnv): BridgeEntitle
         method: "POST",
         headers: { ...headers, "content-type": "application/json" },
         body: JSON.stringify({
-          desktop_version: env.LONGHUB_DESKTOP_VERSION ?? "0.0.0",
+          manager_version: env.LONGHUB_MANAGER_VERSION ?? "0.0.0",
           installed_packs: [{ pack_id: packId, version: packVersion }],
         }),
         signal: AbortSignal.timeout(10_000),

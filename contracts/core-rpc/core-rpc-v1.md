@@ -1,6 +1,7 @@
-# LongHub Core RPC V1（冻结契约草案）
+# LongHub Core RPC V1（历史/废弃契约草案）
 
-Desktop Main / Renderer / Core / Skill Worker 之间的本地 RPC 契约。传输为 JSON 消息（Electron IPC / 本地 stdio），仅开放白名单方法。
+早期 Electron Main / Renderer / Core / Skill Worker 之间的本地 RPC 契约。传输为 JSON 消息（Electron IPC /
+本地 stdio），仅用于历史审计；clean-launch Manager 不实现、迁移或兼容它。
 
 ## 通用约定
 
@@ -16,7 +17,7 @@ Desktop Main / Renderer / Core / Skill Worker 之间的本地 RPC 契约。传�
 
 | 方法 | 说明 |
 | --- | --- |
-| `core.hello` | 版本协商，返回 Core RPC 版本与 Desktop 版本 |
+| `core.hello` | 版本协商，返回历史 Core RPC 版本与客户端版本 |
 | `session.create` | 创建会话 |
 | `session.list` | 列出会话 |
 | `task.submit` | 提交无企业权限的历史原型任务（可降低但不能抬高预算） |
@@ -36,7 +37,7 @@ Desktop Main / Renderer / Core / Skill Worker 之间的本地 RPC 契约。传�
 | `event.confirm.request` | 请求人工确认（写文件、发消息、改企业数据、付款、删除） |
 | `event.pack` | 套装安装/升级/回滚进度 |
 
-### Desktop Main → Core
+### 历史 Electron Main → Core
 
 | 方法 | 说明 |
 | --- | --- |
@@ -59,4 +60,4 @@ Desktop Main / Renderer / Core / Skill Worker 之间的本地 RPC 契约。传�
 - `confirm.respond` 只处理 Core 已创建的待确认记录；记录绑定 Agent、Profile 版本、Session、
   ToolCall、权限和输入摘要，过期或消费后不可复用。
 - 所有方法幂等或可安全重试；`task.submit` 必须携带客户端生成的幂等键。
-- 破坏性变更需提升主版本（`rpc: "2.0"`）并保留 V1 兼容期。
+- 该历史契约不设生产兼容期；若未来需要重新启用，必须创建新的产品决策和主版本。

@@ -26,6 +26,8 @@ import { PackInstaller } from "../src/pack-installer.js";
 import { activateCloudDevice } from "./helpers/activate-cloud-device.js";
 
 const ADMIN_TOKEN = "provision-admin";
+/** Retired Pack/activation E2E; excluded from the clean-launch default suite. */
+const RUN_LEGACY_SURFACE_TESTS = process.env.LONGHUB_RUN_LEGACY_SURFACE_TESTS === "true";
 const root = mkdtempSync(join(tmpdir(), "longhub-agent-provision-"));
 let api: ReturnType<typeof createCloudApiServer>;
 let baseUrl: string;
@@ -44,7 +46,14 @@ async function freePort(): Promise<number> {
 }
 
 beforeAll(async () => {
-  api = createCloudApiServer({ executorUrl: "http://127.0.0.1:1", adminToken: ADMIN_TOKEN }).listen(0);
+  if (!RUN_LEGACY_SURFACE_TESTS) return;
+  // Historical Pack/activation regression only. Production does not opt in to
+  // this legacy surface under the clean-launch product policy.
+  api = createCloudApiServer({
+    executorUrl: "http://127.0.0.1:1",
+    adminToken: ADMIN_TOKEN,
+    legacySurfaceEnabled: true,
+  }).listen(0);
   await once(api, "listening");
   baseUrl = `http://127.0.0.1:${(api.address() as AddressInfo).port}`;
 });
@@ -54,11 +63,13 @@ afterAll(async () => {
     gatewayProcess.kill();
     await Promise.race([once(gatewayProcess, "exit"), new Promise((resolve) => setTimeout(resolve, 5_000))]);
   }
-  api.close();
+  if (RUN_LEGACY_SURFACE_TESTS) api.close();
   rmSync(root, { recursive: true, force: true });
 });
 
-describe("全新 userData：云端授权 → 一键安装 → Agent 激活", () => {
+describe.skipIf(!RUN_LEGACY_SURFACE_TESTS)(
+  "历史 Pack 回归：云端授权 → 一键安装 → Agent 激活（仅显式 LONGHUB_RUN_LEGACY_SURFACE_TESTS=true）",
+  () => {
   it("发现 HR 入口，下载验签并直接写入 main + HR 运行时", async () => {
     expect((await new PackPublisher(baseUrl, ADMIN_TOKEN).publish(buildHrPackSource("1.0.0"))).ok).toBe(true);
     const cloud = new CloudPackClient(baseUrl);
@@ -212,4 +223,5 @@ describe("全新 userData：云端授权 → 一键安装 → Agent 激活", () 
       installedPackIds: new Set([HR_PACK_ID]),
     })).toEqual([]);
   }, 160_000);
-});
+  },
+);

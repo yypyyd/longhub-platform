@@ -13,6 +13,7 @@ import {
   type UpstreamRuntimeAdapter,
   type UpstreamSession,
 } from "@longhub/xiaolongxia-adapter";
+import { BUILTIN_WORKER_IMPLEMENTATIONS } from "./skill-runtime-policy.js";
 
 const echoUpper = defineSkill<{ text: string }, { text: string }>({
   id: "longhub.skill.echo-upper",
@@ -75,14 +76,22 @@ const chat = defineSkill<
   },
 });
 
-const skills = new Map<string, SkillDefinition<unknown, unknown>>([
-  [echoUpper.id, echoUpper as SkillDefinition<unknown, unknown>],
-  [jdDraft.id, jdDraft as SkillDefinition<unknown, unknown>],
-  [chat.id, chat as SkillDefinition<unknown, unknown>],
-  ...hrLocalSkills.map(
-    (skill) => [skill.id, skill] as [string, SkillDefinition<unknown, unknown>],
-  ),
-]);
+const builtInDefinitions: readonly SkillDefinition<unknown, unknown>[] = [
+  echoUpper as SkillDefinition<unknown, unknown>,
+  jdDraft as SkillDefinition<unknown, unknown>,
+  chat as SkillDefinition<unknown, unknown>,
+  ...hrLocalSkills,
+];
+const allowedSkillIds = new Set<string>(Object.values(BUILTIN_WORKER_IMPLEMENTATIONS));
+const definitionsById = new Map(builtInDefinitions.map((skill) => [skill.id, skill]));
+for (const skillId of allowedSkillIds) {
+  if (!definitionsById.has(skillId)) throw new Error(`Worker allowlist 缺少随包实现: ${skillId}`);
+}
+const skills = new Map<string, SkillDefinition<unknown, unknown>>(
+  builtInDefinitions
+    .filter((skill) => allowedSkillIds.has(skill.id))
+    .map((skill) => [skill.id, skill] as const),
+);
 
 const channel = createLineChannel(process.stdin, process.stdout, (msg: RpcMessage) => {
   if (!isRequest(msg)) return;

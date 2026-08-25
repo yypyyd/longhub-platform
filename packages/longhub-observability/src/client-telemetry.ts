@@ -31,7 +31,7 @@ export type ClientProductErrorCode = typeof CLIENT_PRODUCT_ERROR_CODES[number];
 
 interface ClientTelemetryEventBase {
   occurred_at: string;
-  desktop_version: string;
+  manager_version: string;
   openclaw_version: string;
   platform: ClientTelemetryPlatform;
   architecture: ClientTelemetryArchitecture;
@@ -116,11 +116,11 @@ export function parseClientTelemetryBatch(input: unknown, now = new Date()): Cli
   const nowMs = now.getTime();
   const events = input.events.map((raw, index): ClientTelemetryEvent => {
     if (!isPlainObject(raw)) throw new ClientTelemetryValidationError(`events[${index}] 必须是对象`);
-    assertExactKeys(raw, ["event_type", "occurred_at", "desktop_version", "openclaw_version", "platform", "architecture", "fields"], `events[${index}]`);
+    assertExactKeys(raw, ["event_type", "occurred_at", "manager_version", "openclaw_version", "platform", "architecture", "fields"], `events[${index}]`);
     if (!isPlainObject(raw.fields)) throw new ClientTelemetryValidationError(`events[${index}].fields 必须是对象`);
     const common = {
       occurred_at: occurredAt(raw.occurred_at, nowMs),
-      desktop_version: version(raw.desktop_version, "desktop_version"),
+      manager_version: version(raw.manager_version, "manager_version"),
       openclaw_version: version(raw.openclaw_version, "openclaw_version"),
       platform: enumValue(raw.platform, CLIENT_TELEMETRY_PLATFORMS, "platform"),
       architecture: enumValue(raw.architecture, CLIENT_TELEMETRY_ARCHITECTURES, "architecture"),

@@ -60,7 +60,7 @@ export function buildHrAgentProfile(): AgentProfile {
       ],
       tools: {
         // LH-036-04 先开放只读简历初筛；写操作和 L2/云端能力待权限交集闭环后启用。
-        allow: ["longhub_resume_screen"],
+        allow: ["longhub_offer_letter", "longhub_resume_screen"],
         deny: [],
       },
       sandbox: "workspace-write",
@@ -71,7 +71,7 @@ export function buildHrAgentProfile(): AgentProfile {
       entitlementExpiryPolicy: "readonly",
     },
     compatibility: {
-      minDesktopVersion: "0.3.6",
+      minManagerVersion: "0.3.6",
       openclawVersion: "2026.7.1-2",
       profileMigrationVersion: 1,
     },
@@ -84,7 +84,7 @@ export function buildHrPackSource(version: string): HrPackSource {
   const profile = buildHrAgentProfile();
   const manifest: PackManifest = {
     schemaVersion: "longhub/v1",
-    pack: { id: HR_PACK_ID, version, minDesktopVersion: "0.3.6" },
+    pack: { id: HR_PACK_ID, version, minManagerVersion: "0.3.6" },
     agentTemplate: { id: HR_AGENT_ID, version: profile.version, profilePath: HR_PROFILE_PATH },
     capabilities: [
       {

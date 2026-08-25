@@ -21,7 +21,7 @@ export interface ClientRuntimeConfig extends ClientModelRuntimeConfig {
   config_version: string;
   issued_at: string;
   expires_at: string;
-  compatible_desktop: { min_version: string; max_version?: string };
+  compatible_manager: { min_version: string; max_version?: string };
   product: {
     assistant_name: string;
     assistant_avatar_path: string;
@@ -78,7 +78,7 @@ export function parseClientRuntimeConfig(value: unknown): ClientRuntimeConfig {
     !strictKeys(body, [
       "schema_version", "config_version", "issued_at", "expires_at", "provider_id", "base_path",
       "model_id", "display_name", "api_type", "context_window", "max_tokens", "allow_user_model_selection",
-      "compatible_desktop", "product", "features",
+      "compatible_manager", "product", "features",
     ]) ||
     body.schema_version !== CLIENT_RUNTIME_CONFIG_SCHEMA ||
     typeof body.config_version !== "string" ||
@@ -96,7 +96,7 @@ export function parseClientRuntimeConfig(value: unknown): ClientRuntimeConfig {
     typeof body.max_tokens !== "number" || !Number.isInteger(body.max_tokens) ||
     body.max_tokens < 256 || body.max_tokens > 1_000_000 || body.max_tokens > body.context_window
   ) throw new Error("龙枢后台返回了无效的客户端模型配置");
-  const compatible = body.compatible_desktop;
+  const compatible = body.compatible_manager;
   const product = body.product;
   const features = body.features;
   if (!compatible || typeof compatible !== "object" || Array.isArray(compatible) ||
@@ -222,8 +222,11 @@ export function buildOpenClawConfig(
   cloudBaseUrl: string,
   runtime: ClientModelRuntimeConfig,
   workspaceDir: string,
+  inputCapabilities: readonly ("text" | "image")[] = ["text"],
 ): Record<string, unknown> {
   if (!workspaceDir.trim()) throw new Error("龙枢 OpenClaw 工作区路径不能为空");
+  if ((inputCapabilities.length !== 1 && inputCapabilities.length !== 2) || inputCapabilities[0] !== "text" ||
+    (inputCapabilities.length === 2 && inputCapabilities[1] !== "image")) throw new Error("模型输入能力无效");
   const modelRef = `${runtime.provider_id}/${runtime.model_id}`;
   return {
     gateway: { mode: "local" },
@@ -247,7 +250,7 @@ export function buildOpenClawConfig(
               id: runtime.model_id,
               name: runtime.display_name,
               reasoning: false,
-              input: ["text", "image"],
+              input: [...inputCapabilities],
               cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
               contextWindow: runtime.context_window,
               maxTokens: runtime.max_tokens,

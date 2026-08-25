@@ -104,9 +104,9 @@ export function validatePackContent(
   if (profile.version !== manifest.agentTemplate.version) {
     issues.push({ path: `files.${profilePath}.version`, message: "Profile 版本必须与 agentTemplate.version 一致" });
   }
-  if (profile.compatibility.minDesktopVersion !== manifest.pack.minDesktopVersion) {
+  if (profile.compatibility.minManagerVersion !== manifest.pack.minManagerVersion) {
     issues.push({
-      path: `files.${profilePath}.compatibility.minDesktopVersion`,
+      path: `files.${profilePath}.compatibility.minManagerVersion`,
       message: "Profile 与 Pack 的最低 Desktop 版本必须一致",
     });
   }
